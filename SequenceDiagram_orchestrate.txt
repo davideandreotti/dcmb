@@ -1,0 +1,83 @@
+title Sequence Diagram - Prove Orchestrate
+
+actor Client
+participant Gateway
+participant Operator
+participant ServerCerts (5000)
+participant ServerApp (8000)
+
+
+note over Client: t1 = ClientHello sent
+note over Gateway: t20 = gateway accept / inizio handshake misurato lato gateway
+
+Client->>Gateway: TCP/TLS ClientHello verso :8443
+//note over Gateway: t25 = client_to_gateway_received
+//note over Gateway: t26 = operator_selection_start
+
+Gateway->>Gateway: countReadyIdleOperators() 
+
+alt Ready idle >= soglia minima
+else Ready idle < soglia minima
+Gateway->>Gateway: docker service scale 
+//note over Gateway: refill demand-driven sul messaggio in arrivo
+end
+
+Gateway->>Gateway: selectReadyOperator()
+
+alt Operator pronto disponibile
+note over Gateway: t27 = operator_selected
+else Policy wait
+Gateway->>Gateway: waitForReadyOperator(timeout)
+note over Gateway: t27 = operator_selected
+end
+
+//note over Gateway: t28 = gateway_to_operator_send
+Gateway-->>Operator: TCP forward trasparente del ClientHello
+
+//note over Operator: t29 = gateway_to_operator_received
+//note over Operator: t_op2 = ClientHello arrival
+note over Operator: t_op3 = SNI extracted
+
+Operator->>Operator: certCache[server]
+
+
+Operator->>ServerCerts (5000): POST /certs {sni: "server"}
+//note over ServerCerts (5000): t4 = request received
+note over ServerCerts (5000): t5 = BeginAutoGenCerts
+ServerCerts (5000)->>ServerCerts (5000): run_generate_dc()
+note over ServerCerts (5000): t6 = EndAutoGenCerts
+//note over ServerCerts (5000): t7 = send response
+ServerCerts (5000)-->>Operator: {cert_b64, key_b64, dc_cred_b64, dc_key_b64}
+
+///note over Operator: t_op11 = JSON parsed
+//note over Operator: t_op12 = fields extracted
+//note over Operator: t_op14 = upstream trust pool updated
+//note over Operator: t_op15 = delegated cert assembled
+//note over Operator: t_op16 = cache write
+//note over Operator: t_op18 = post-fetch
+//note over Operator: t_op19 = cache recheck
+//note over Operator: t_op9 = ServerHello (cache miss)
+
+Operator-->>Gateway: TLS ServerHello + Certificate/Delegated Credential
+Gateway-->>Client: TLS ServerHello + Certificate/Delegated Credential
+
+note over Client: t23 = CertValidationStart
+Client->>Client: validazione certificato server/DC
+note over Client: t24 = CertValidationDone
+note over Client: t21 = TLSHandshakeDone
+
+Client->>Gateway: HTTPS GET/POST /function/init
+Gateway-->>Operator: forward TCP applicativo
+Operator->>ServerApp (8000): HTTP GET/POST /function/init
+ServerApp (8000)-->>Operator: HTTP 200 + body
+Operator-->>Gateway: HTTP 200 + body
+Gateway-->>Client: HTTP 200 + body
+
+note over Client: t10 = risposta osservata dal client
+
+
+
+
+
+
+    

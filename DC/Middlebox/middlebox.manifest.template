@@ -1,0 +1,55 @@
+libos.entrypoint = "/middlebox"
+
+loader.log_level = "{{ log_level }}"
+loader.env.LD_LIBRARY_PATH = "/lib:/usr/lib:/usr/lib/x86_64-linux-gnu"
+loader.env.GODEBUG = "netdns=go"
+loader.insecure__use_cmdline_argv = true
+
+fs.mounts = [
+  # Gramine runtime
+  { path = "/lib", uri = "file:{{ gramine.runtimedir() }}" },
+
+  # Librerie di sistema
+  { path = "/usr/lib", uri = "file:/usr/lib" },
+  { path = "/usr/lib/x86_64-linux-gnu", uri = "file:/usr/lib/x86_64-linux-gnu" },
+
+  # Config sistema
+  { path = "/etc", uri = "file:/etc" },
+
+  # Certificati (DEVE esistere!)
+  { path = "/certs", uri = "file:/home/bonsai/Desktop/MasterThesis/DC/certs" }
+]
+
+# =========================
+# SGX CONFIG
+# =========================
+
+sgx.debug = true
+sgx.enclave_size = "2G"
+sgx.edmm_enable = {{ 'true' if env.get('EDMM', '0') == '1' else 'false' }}
+sgx.max_threads = 16
+sgx.remote_attestation = "none"
+#sgx.enable_stats = true
+#sgx.profile.enable = "all"
+
+# =========================
+# TRUSTED FILES (read only)
+# =========================
+
+sgx.trusted_files = [
+  "file:middlebox",
+  "file:{{ gramine.runtimedir() }}/",
+  "file:/home/bonsai/Desktop/MasterThesis/DC/certs/cert.pem",
+  "file:/home/bonsai/Desktop/MasterThesis/DC/certs/key.pem"
+]
+
+# =========================
+# ALLOWED FILES (read and write)
+# =========================
+
+sgx.allowed_files = [
+  "file:/etc/host.conf",
+  "file:/etc/resolv.conf",
+  "file:/etc/ssl/certs/ca-certificates.crt",
+  "file:jwks.dat"
+]

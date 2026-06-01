@@ -1,0 +1,56 @@
+# Third-Party Licenses
+
+This project includes third-party components. Each component is
+licensed under its own terms, as described below.
+
+---
+
+## 1. Cloudflare Delegated Credentials
+
+- **License**: BSD 3-Clause
+- **Source**: https://github.com/cloudflare/go
+- **License text**: See `DC/go/LICENSE`
+
+---
+
+## 2. TLMSP-Tools Reference Implementation (tlmsp-tools)
+
+- **License**: ETSI Software License
+- **Source**: https://forge.etsi.org/rep/cyber/103523_MSP/tlmsp/tlmsp-tools
+- **Notes**: Permission is limited to use in relation to ETSI standards.  
+  ETSI retains the right to use, reproduce, and amend modified source code.  
+- **License text**: See `ETSI/TLMSP/tlmsp-tools/LICENSE`
+
+---
+
+## 3. TLMSP-OpenSSL Reference Implementation (tlmsp-openssl)
+
+- **License**: ETSI Software License
+- **Source**: https://forge.etsi.org/rep/cyber/103523_MSP/tlmsp/tlmsp-openssl
+- **Notes**: Permission is limited to use in relation to ETSI standards.  
+  ETSI retains the right to use, reproduce, and amend modified source code.  
+- **License text**: See `ETSI/TLMSP/tlmsp-openssl/LICENSE`
+
+---
+
+## 4. TLMSP-curl Reference Implementation (tlmsp-curl)
+
+- **License**: ETSI Software License
+- **Source**: https://forge.etsi.org/rep/cyber/103523_MSP/tlmsp/tlmsp-curl
+- **Notes**: Permission is limited to use in relation to ETSI standards.  
+  ETSI retains the right to use, reproduce, and amend modified source code.  
+- **License text**: See `ETSI/TLMSP/tlmsp-curl/LICENSE`
+
+
+## 5. FaaS Application (University of Illinois)
+
+- **License**: University of Illinois/NCSA Open Source License
+- **License text**: See `hello-retail/LICENSE`
+
+---
+
+## Notice
+
+Your use of this repository is subject to both the license in the
+top-level `LICENSE` file (covering the original code of this project)
+and the licenses of the third-party components listed above.

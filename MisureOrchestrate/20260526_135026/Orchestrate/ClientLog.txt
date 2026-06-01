@@ -1,0 +1,75 @@
+{"status": "ok", "message": "function initialized"}
+t1: [CLIENT] - ClientHello = 1779796233317676979 ns
+t27: [CLIENT] - TCPConnectStart = 1779796233317909813 ns
+t28: [CLIENT] - TCPConnectDone = 1779796233318200467 ns
+t20: [CLIENT] - TLSHandshakeStart = 1779796233318245458 ns
+t23: [CLIENT] - CertValidationStart = 1779796233345907553 ns
+t24: [CLIENT] - CertValidationDone = 1779796233345993834 ns
+t21: [CLIENT] - TLSHandshakeDone = 1779796233346976751 ns
+t10: [CLIENT] - ServerHelloLatency = 1779796233351012081 ns
+{"status": "ok", "message": "function initialized"}
+t1: [CLIENT] - ClientHello = 1779796234316314285 ns
+t27: [CLIENT] - TCPConnectStart = 1779796234316570310 ns
+t28: [CLIENT] - TCPConnectDone = 1779796234316840078 ns
+t20: [CLIENT] - TLSHandshakeStart = 1779796234316927096 ns
+t23: [CLIENT] - CertValidationStart = 1779796234354194828 ns
+t24: [CLIENT] - CertValidationDone = 1779796234354215542 ns
+t21: [CLIENT] - TLSHandshakeDone = 1779796234355732294 ns
+t10: [CLIENT] - ServerHelloLatency = 1779796234365612580 ns
+{"status": "ok", "message": "function initialized"}
+t1: [CLIENT] - ClientHello = 1779796235310691951 ns
+t27: [CLIENT] - TCPConnectStart = 1779796235310760689 ns
+t28: [CLIENT] - TCPConnectDone = 1779796235310895387 ns
+t20: [CLIENT] - TLSHandshakeStart = 1779796235310903966 ns
+t23: [CLIENT] - CertValidationStart = 1779796235322620452 ns
+t24: [CLIENT] - CertValidationDone = 1779796235322629807 ns
+t21: [CLIENT] - TLSHandshakeDone = 1779796235323130797 ns
+t10: [CLIENT] - ServerHelloLatency = 1779796235326618941 ns
+{"status": "ok", "message": "function initialized"}
+t1: [CLIENT] - ClientHello = 1779796236310387116 ns
+t27: [CLIENT] - TCPConnectStart = 1779796236310452173 ns
+t28: [CLIENT] - TCPConnectDone = 1779796236310536868 ns
+t20: [CLIENT] - TLSHandshakeStart = 1779796236310546624 ns
+t23: [CLIENT] - CertValidationStart = 1779796236321214918 ns
+t24: [CLIENT] - CertValidationDone = 1779796236321222911 ns
+t21: [CLIENT] - TLSHandshakeDone = 1779796236321767127 ns
+t10: [CLIENT] - ServerHelloLatency = 1779796236328305722 ns
+{"status": "ok", "message": "function initialized"}
+t1: [CLIENT] - ClientHello = 1779796237311565928 ns
+t27: [CLIENT] - TCPConnectStart = 1779796237311666179 ns
+t28: [CLIENT] - TCPConnectDone = 1779796237311799536 ns
+t20: [CLIENT] - TLSHandshakeStart = 1779796237311811321 ns
+t23: [CLIENT] - CertValidationStart = 1779796237326158535 ns
+t24: [CLIENT] - CertValidationDone = 1779796237326167194 ns
+t21: [CLIENT] - TLSHandshakeDone = 1779796237326770654 ns
+t10: [CLIENT] - ServerHelloLatency = 1779796237330455318 ns
+
+===== ESPERIMENTO 1 =====
+--- OPERAZIONE 1 (esperimento 1) ---
+t30: [ORCH] - pacing_tick_reached = 1779796233307518748 ns
+t31: [ORCH] - request_dispatched = 1779796233307649359 ns
+t32: [ORCH] - request_completed = 1779796233351870417 ns
+
+===== ESPERIMENTO 2 =====
+--- OPERAZIONE 1 (esperimento 2) ---
+t30: [ORCH] - pacing_tick_reached = 1779796234308348523 ns
+t31: [ORCH] - request_dispatched = 1779796234308399201 ns
+t32: [ORCH] - request_completed = 1779796234367611269 ns
+
+===== ESPERIMENTO 3 =====
+--- OPERAZIONE 1 (esperimento 3) ---
+t30: [ORCH] - pacing_tick_reached = 1779796235308190518 ns
+t31: [ORCH] - request_dispatched = 1779796235308203742 ns
+t32: [ORCH] - request_completed = 1779796235328129302 ns
+
+===== ESPERIMENTO 4 =====
+--- OPERAZIONE 1 (esperimento 4) ---
+t30: [ORCH] - pacing_tick_reached = 1779796236308208482 ns
+t31: [ORCH] - request_dispatched = 1779796236308219488 ns
+t32: [ORCH] - request_completed = 1779796236329744597 ns
+
+===== ESPERIMENTO 5 =====
+--- OPERAZIONE 1 (esperimento 5) ---
+t30: [ORCH] - pacing_tick_reached = 1779796237308212477 ns
+t31: [ORCH] - request_dispatched = 1779796237308230997 ns
+t32: [ORCH] - request_completed = 1779796237331287009 ns

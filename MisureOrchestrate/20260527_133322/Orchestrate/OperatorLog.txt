@@ -1,0 +1,186 @@
+Reloading jwks
+[MB] unified middlebox starting
+[MB] TLS traffic listening on :8443
+[MB] operator API listening on :18080
+[MB] proxy target is https://server:8000
+Reloading jwks
+[MB] unified middlebox starting
+[MB] cert service is http://server:5000
+[MB] TLS traffic listening on :8443
+[MB] expected SNI is server
+[MB] Middlebox TLS server listening on :8443
+[MB] operator API listening on :18080
+[MB] Operator HTTP API listening on :18080
+[MB] proxy target is https://server:8000
+[MB] cert service is http://server:5000
+[MB] expected SNI is server
+[MB] Middlebox TLS server listening on :8443
+[MB] Operator HTTP API listening on :18080
+Reloading jwks
+[MB] unified middlebox starting
+[MB] TLS traffic listening on :8443
+[MB] operator API listening on :18080
+[MB] proxy target is https://server:8000
+[MB] cert service is http://server:5000
+[MB] expected SNI is server
+[MB] Middlebox TLS server listening on :8443
+[MB] Operator HTTP API listening on :18080
+Reloading jwks
+Reloading jwks
+[MB] unified middlebox starting
+[MB] TLS traffic listening on :8443
+[MB] unified middlebox starting
+[MB] operator API listening on :18080
+[MB] TLS traffic listening on :8443
+[MB] proxy target is https://server:8000
+[MB] cert service is http://server:5000
+[MB] operator API listening on :18080
+[MB] proxy target is https://server:8000
+[MB] expected SNI is server
+[MB] cert service is http://server:5000
+[MB] Operator HTTP API listening on :18080
+[MB] Middlebox TLS server listening on :8443
+[MB] expected SNI is server
+[MB] Operator HTTP API listening on :18080
+[MB] Middlebox TLS server listening on :8443
+Reloading jwks
+[MB] unified middlebox starting
+[MB] TLS traffic listening on :8443
+[MB] operator API listening on :18080
+[MB] proxy target is https://server:8000
+[MB] cert service is http://server:5000
+[MB] expected SNI is server
+[MB] Operator HTTP API listening on :18080
+[MB] Middlebox TLS server listening on :8443
+2026/05/27 11:33:33 http: TLS handshake error from 10.0.1.115:42172: EOF
+t2: [MIDDLEBOX] - ClientHelloLatency = 1779881613313922098 ns
+t3: [MIDDLEBOX] - ClientHello = 1779881613314061679 ns
+[MB] fetching certificates from http://server:5000
+t8: [MIDDLEBOX] - CertsToMLatency = 1779881613325922216 ns
+t9: [MIDDLEBOX] - ServerHello = 1779881613327222111 ns
+[MB] Request GET /function/init
+method: GET, uri: /function/init
+[1;36m[TESTING MODE] JWT validation failed, applying dummy fallback validation[0m
+Testing /function/init
+t37: [MIDDLEBOX] - XCodeValidationStart = 1779881613329259592 ns
+t38: [MIDDLEBOX] - XCodeValidationDone = 1779881613329262011 ns
+t39: [MIDDLEBOX] - ForwardingStart = 1779881613329264721 ns
+t40: [MIDDLEBOX] - ResponseFromServer = 1779881613332404875 ns
+[MB] Response received from server
+responseCode: 200
+/function/init: 329101f422939cf4
+t2: [MIDDLEBOX] - ClientHelloLatency = 1779881614310774842 ns
+t3: [MIDDLEBOX] - ClientHello = 1779881614310795425 ns
+[MB][TLS] Delegated certificate found in cache
+t9: [MIDDLEBOX] - ServerHello = 1779881614310804488 ns
+[MB] Request GET /function/init
+method: GET, uri: /function/init
+[1;36m[TESTING MODE] JWT validation failed, applying dummy fallback validation[0m
+Testing /function/init
+t37: [MIDDLEBOX] - XCodeValidationStart = 1779881614313565109 ns
+t38: [MIDDLEBOX] - XCodeValidationDone = 1779881614313570584 ns
+t39: [MIDDLEBOX] - ForwardingStart = 1779881614313576566 ns
+t40: [MIDDLEBOX] - ResponseFromServer = 1779881614318230807 ns
+[MB] Response received from server
+responseCode: 200
+/function/init: 87a8490e32ab05a9
+t2: [MIDDLEBOX] - ClientHelloLatency = 1779881615319180724 ns
+t3: [MIDDLEBOX] - ClientHello = 1779881615319268971 ns
+[MB][TLS] Delegated certificate found in cache
+t9: [MIDDLEBOX] - ServerHello = 1779881615319285283 ns
+[MB] Request GET /function/init
+method: GET, uri: /function/init
+[1;36m[TESTING MODE] JWT validation failed, applying dummy fallback validation[0m
+Testing /function/init
+t37: [MIDDLEBOX] - XCodeValidationStart = 1779881615323777487 ns
+t38: [MIDDLEBOX] - XCodeValidationDone = 1779881615323787676 ns
+t39: [MIDDLEBOX] - ForwardingStart = 1779881615323796763 ns
+t40: [MIDDLEBOX] - ResponseFromServer = 1779881615331640342 ns
+[MB] Response received from server
+responseCode: 200
+/function/init: e3d664ad78f91e24
+Reloading jwks
+t2: [MIDDLEBOX] - ClientHelloLatency = 1779881616324303331 ns
+t3: [MIDDLEBOX] - ClientHello = 1779881616324324087 ns
+[MB][TLS] Delegated certificate found in cache
+t9: [MIDDLEBOX] - ServerHello = 1779881616324334137 ns
+[MB] Request GET /function/init
+method: GET, uri: /function/init
+[1;36m[TESTING MODE] JWT validation failed, applying dummy fallback validation[0m
+Testing /function/init
+t37: [MIDDLEBOX] - XCodeValidationStart = 1779881616330391124 ns
+t38: [MIDDLEBOX] - XCodeValidationDone = 1779881616330396460 ns
+t39: [MIDDLEBOX] - ForwardingStart = 1779881616330406715 ns
+t40: [MIDDLEBOX] - ResponseFromServer = 1779881616336488273 ns
+[MB] Response received from server
+responseCode: 200
+/function/init: ee65cc4c03cfa6e5
+[MB] unified middlebox starting
+[MB] TLS traffic listening on :8443
+[MB] operator API listening on :18080
+[MB] proxy target is https://server:8000
+[MB] cert service is http://server:5000
+[MB] expected SNI is server
+[MB] Operator HTTP API listening on :18080
+[MB] Middlebox TLS server listening on :8443
+Reloading jwks
+[MB] unified middlebox starting
+[MB] TLS traffic listening on :8443
+[MB] operator API listening on :18080
+[MB] proxy target is https://server:8000
+[MB] cert service is http://server:5000
+[MB] expected SNI is server
+[MB] Operator HTTP API listening on :18080
+[MB] Middlebox TLS server listening on :8443
+Reloading jwks
+[MB] unified middlebox starting
+[MB] TLS traffic listening on :8443
+[MB] operator API listening on :18080
+[MB] proxy target is https://server:8000
+[MB] cert service is http://server:5000
+[MB] expected SNI is server
+[MB] Operator HTTP API listening on :18080
+[MB] Middlebox TLS server listening on :8443
+Reloading jwks
+[MB] unified middlebox starting
+[MB] TLS traffic listening on :8443
+[MB] operator API listening on :18080
+[MB] proxy target is https://server:8000
+[MB] cert service is http://server:5000
+[MB] expected SNI is server
+[MB] Operator HTTP API listening on :18080
+[MB] Middlebox TLS server listening on :8443
+Reloading jwks
+[MB] unified middlebox starting
+[MB] TLS traffic listening on :8443
+[MB] operator API listening on :18080
+[MB] proxy target is https://server:8000
+[MB] cert service is http://server:5000
+[MB] expected SNI is server
+[MB] Operator HTTP API listening on :18080
+[MB] Middlebox TLS server listening on :8443
+t2: [MIDDLEBOX] - ClientHelloLatency = 1779881617309212263 ns
+t3: [MIDDLEBOX] - ClientHello = 1779881617309220596 ns
+[MB][TLS] Delegated certificate found in cache
+t9: [MIDDLEBOX] - ServerHello = 1779881617309224113 ns
+[MB] Request GET /function/init
+method: GET, uri: /function/init
+[1;36m[TESTING MODE] JWT validation failed, applying dummy fallback validation[0m
+Testing /function/init
+t37: [MIDDLEBOX] - XCodeValidationStart = 1779881617310800593 ns
+t38: [MIDDLEBOX] - XCodeValidationDone = 1779881617310822644 ns
+t39: [MIDDLEBOX] - ForwardingStart = 1779881617310837003 ns
+t40: [MIDDLEBOX] - ResponseFromServer = 1779881617312968147 ns
+[MB] Response received from server
+responseCode: 200
+/function/init: d9a1fedc16a34d74
+
+===== ESPERIMENTO 1 =====
+
+===== ESPERIMENTO 2 =====
+
+===== ESPERIMENTO 3 =====
+
+===== ESPERIMENTO 4 =====
+
+===== ESPERIMENTO 5 =====

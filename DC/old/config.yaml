@@ -1,0 +1,33 @@
+# Specify the OS distro that is used to build Gramine, i.e., the distro from where the Gramine build
+# gets all tools and dependencies from. This distro should match the distro underlying the
+# application's Docker image; otherwise the results may be unpredictable (if you specify `"auto"`,
+# which is recommended, you don't need to worry about the mismatch).
+#
+# Currently supported distros are:
+# - ubuntu:22.04, ubuntu:24.04
+# - debian:11, debian:12
+# - quay.io/centos/centos:stream9
+# - redhat/ubi9:9.4
+# - redhat/ubi9-minimal:9.4
+# - registry.suse.com/suse/sle15:15.4
+
+# If Distro is set to "auto", GSC detects the distro automatically by examining the supplied
+# Docker image. Alternatively, Distro can be set to one of the supported distros mentioned above.
+Distro: "ubuntu:22.04"
+
+# If the image has a specific registry, define it here.
+# Empty by default; example value: "registry.access.redhat.com/ubi8".
+Registry: ""
+
+# If you're using your own fork and branch of Gramine, specify the GitHub link and the branch name
+# below; typically, you want to keep the default values though.
+#
+# It is also possible to specify the prebuilt Gramine Docker image (that was built previously via
+# the `gsc build-gramine` command). For this, remove Repository and Branch and instead write:
+#   Image:      "<prebuilt Gramine Docker image>"
+#
+# GSC releases are guaranteed to work with corresponding Gramine releases (and GSC `master`
+# branch is guaranteed to work with current Gramine `master` branch).
+Gramine:
+    Repository: "https://github.com/gramineproject/gramine.git"
+    Branch:     "master"

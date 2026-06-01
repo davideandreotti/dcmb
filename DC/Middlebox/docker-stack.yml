@@ -1,0 +1,167 @@
+# =============================================================================
+# docker-stack.yml — Docker Swarm stack per l'architettura gateway+operator
+# =============================================================================
+#
+# TOPOLOGIA:
+#
+#   [client]
+#      │  HTTPS :8443
+#      ▼
+#   [mb_gateway]   ← manager node, TCP forward trasparente (legge solo SNI)
+#      │  TCP :9443 (overlay network interna)
+#      ▼
+#   [mb_operator_*]  ← worker nodes, terminano TLS con Delegated Credential
+#      │  HTTPS :8000
+#      ▼
+#   [server]
+#
+# SERVIZI:
+#   mb_gateway        — unico punto d'ingresso, gira sul manager
+#   mb_operator_cold  — operator in modalità cold (avviato on-demand)
+#   mb_operator_warm  — operator già attivo, DC non in cache
+#   mb_operator_auth  — operator già attivo, DC pre-fetchato al boot
+#   Il server è esterno allo stack e va lanciato manualmente in un terminale separato.
+#
+# RETI:
+#   OVERLAY_NETWORK_NAME  — rete overlay interna gateway↔operator↔server
+#
+# BUILD IMMAGINI (prima del deploy):
+#   docker build -f Dockerfile.gateway  -t mb_gateway:latest  ./DC/Middlebox/
+#   docker build -f Dockerfile.operator -t mb_operator:latest ./DC/Middlebox/
+#
+# DEPLOY:
+#   docker swarm init   # eseguire solo una volta sul manager
+#   docker stack deploy -c docker-stack.yml tlmsp
+#
+# RIMOZIONE:
+#   docker stack rm tlmsp
+# =============================================================================
+
+version: "3.9"
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # GATEWAY — manager node, porta 8443 esposta all'esterno
+  # ---------------------------------------------------------------------------
+  mb_gateway:
+    image: mb_gateway:latest
+    command: ["./gateway"]
+    ports:
+      - target: 9443
+        published: 9443
+        protocol: tcp
+        mode: host          # host mode → indirizzo IP fisso del manager
+    networks:
+      - tlmsp_overlay
+    environment:
+      - OPERATOR_MODE=warm            # cold | warm | auth
+      - OPERATOR_SERVICE_NAME=${STACK_NAME}_mb_operator_warm  # servizio/pool operator da usare
+      - OPERATOR_TASKS_HOST=${OPERATOR_TASKS_HOST:-tasks.${STACK_NAME}_mb_operator_warm}
+      - MIN_READY_OPERATORS=${MIN_READY_OPERATORS}
+      - SCALE_UP_BY=${SCALE_UP_BY}
+      - MAX_OPERATORS=${MAX_OPERATORS}
+      - AUTOSCALE_PERIOD_SECONDS=${AUTOSCALE_PERIOD_SECONDS}
+      - NO_READY_OPERATOR_POLICY=${NO_READY_OPERATOR_POLICY}
+      - NO_READY_OPERATOR_WAIT_SECONDS=${NO_READY_OPERATOR_WAIT_SECONDS}
+    volumes:
+      # Necessario solo in modalità cold per eseguire "docker service scale"
+      - /var/run/docker.sock:/var/run/docker.sock
+    deploy:
+      replicas: ${GATEWAY_REPLICAS}
+      placement:
+        constraints:
+          - node.role == manager
+      restart_policy:
+        condition: on-failure
+
+  # ---------------------------------------------------------------------------
+  # OPERATOR COLD
+  # Avviato solo quando il gateway scala il servizio (caso cold).
+  # Di default replicas=0; il gateway lo porta a 1 via docker service scale.
+  # ---------------------------------------------------------------------------
+  mb_operator_cold:
+    image: mb_operator:latest
+    command: ["./operator"]
+    user: "0:0"
+    networks:
+      - tlmsp_overlay
+    extra_hosts:
+      - "server:${SERVER_HOST}"
+    volumes:
+      - /dev/sgx_enclave:/dev/sgx_enclave
+      - /dev/sgx_provision:/dev/sgx_provision
+      - ${CLIENT_CA_HOST_PATH}:/certs/ca.crt:ro
+    environment:
+      - OPERATOR_MODE=cold
+      - OPERATOR_ID=operator_cold_{{.Task.ID}}
+      - OPERATOR_DEFAULT_SNI=
+    deploy:
+      endpoint_mode: dnsrr
+      replicas: 0           # avviato on-demand dal gateway
+      restart_policy:
+        condition: on-failure
+
+  # ---------------------------------------------------------------------------
+  # OPERATOR WARM
+  # Già in ascolto; il gateway inoltra il traffico a un operator libero.
+  # L'operator legge lo SNI dal ClientHello e richiede il DC al server.
+  # ---------------------------------------------------------------------------
+  mb_operator_warm:
+    image: mb_operator:latest
+    command: ["./operator"]
+    user: "0:0"
+    networks:
+      - tlmsp_overlay
+    extra_hosts:
+      - "server:${SERVER_HOST}"
+    volumes:
+      - /dev/sgx_enclave:/dev/sgx_enclave
+      - /dev/sgx_provision:/dev/sgx_provision
+      - ${CLIENT_CA_HOST_PATH}:/certs/ca.crt:ro
+    environment:
+      - OPERATOR_MODE=warm
+      - OPERATOR_ID=operator_warm_{{.Task.ID}}
+      - OPERATOR_DEFAULT_SNI=
+      - OPERATOR_EXIT_AFTER_REQUEST=${OPERATOR_EXIT_AFTER_REQUEST}
+      - OPERATOR_CONSUME_AFTER_REQUEST=${OPERATOR_CONSUME_AFTER_REQUEST}
+    deploy:
+      endpoint_mode: dnsrr
+      replicas: ${WARM_REPLICAS}
+      restart_policy:
+        condition: none
+
+  # ---------------------------------------------------------------------------
+  # OPERATOR AUTH
+  # Già in ascolto E con DC pre-fetchato al boot (SNI specificato in OPERATOR_DEFAULT_SNI).
+  # Risponde all'handshake TLS immediatamente senza contattare il server.
+  # ---------------------------------------------------------------------------
+  mb_operator_auth:
+    image: mb_operator:latest
+    command: ["./operator"]
+    user: "0:0"
+    networks:
+      - tlmsp_overlay
+    extra_hosts:
+      - "server:${SERVER_HOST}"
+    volumes:
+      - /dev/sgx_enclave:/dev/sgx_enclave
+      - /dev/sgx_provision:/dev/sgx_provision
+      - ${CLIENT_CA_HOST_PATH}:/certs/ca.crt:ro
+    environment:
+      - OPERATOR_MODE=auth
+      - OPERATOR_ID=operator_auth_{{.Task.ID}}
+      - OPERATOR_DEFAULT_SNI=server   # SNI per cui fare pre-fetch al boot
+    deploy:
+      endpoint_mode: dnsrr
+      replicas: 0
+      restart_policy:
+        condition: on-failure
+
+# ---------------------------------------------------------------------------
+# Rete overlay interna
+# ---------------------------------------------------------------------------
+networks:
+  tlmsp_overlay:
+    external: true
+    name: ${OVERLAY_NETWORK_NAME}

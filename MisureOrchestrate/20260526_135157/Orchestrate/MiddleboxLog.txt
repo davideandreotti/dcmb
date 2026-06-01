@@ -1,0 +1,35 @@
+[GATEWAY] listening on :8443 using task host tasks.tlmsp_mb_operator_warm selection_policy=first
+t25: [GATEWAY] - client_to_gateway_received = 1779796325799959936 ns
+t26: [GATEWAY] - operator_selection_start = 1779796325800008365 ns
+t27: [GATEWAY] - operator_selected = 1779796325802029627 ns
+t28: [GATEWAY] - gateway_to_operator_send = 1779796325802294201 ns
+t25: [GATEWAY] - client_to_gateway_received = 1779796325807156855 ns
+t26: [GATEWAY] - operator_selection_start = 1779796325807186458 ns
+t27: [GATEWAY] - operator_selected = 1779796325808810841 ns
+t28: [GATEWAY] - gateway_to_operator_send = 1779796325809075319 ns
+t25: [GATEWAY] - client_to_gateway_received = 1779796326812065507 ns
+t26: [GATEWAY] - operator_selection_start = 1779796326812155537 ns
+t27: [GATEWAY] - operator_selected = 1779796326814709492 ns
+t28: [GATEWAY] - gateway_to_operator_send = 1779796326815357438 ns
+t25: [GATEWAY] - client_to_gateway_received = 1779796327804694094 ns
+t26: [GATEWAY] - operator_selection_start = 1779796327804710687 ns
+t27: [GATEWAY] - operator_selected = 1779796327807011938 ns
+t28: [GATEWAY] - gateway_to_operator_send = 1779796327807228324 ns
+t25: [GATEWAY] - client_to_gateway_received = 1779796328805813978 ns
+t26: [GATEWAY] - operator_selection_start = 1779796328805833173 ns
+t27: [GATEWAY] - operator_selected = 1779796328808922483 ns
+t28: [GATEWAY] - gateway_to_operator_send = 1779796328809080557 ns
+t25: [GATEWAY] - client_to_gateway_received = 1779796329811598720 ns
+t26: [GATEWAY] - operator_selection_start = 1779796329811648737 ns
+t27: [GATEWAY] - operator_selected = 1779796329815375582 ns
+t28: [GATEWAY] - gateway_to_operator_send = 1779796329815737480 ns
+
+===== ESPERIMENTO 1 =====
+
+===== ESPERIMENTO 2 =====
+
+===== ESPERIMENTO 3 =====
+
+===== ESPERIMENTO 4 =====
+
+===== ESPERIMENTO 5 =====

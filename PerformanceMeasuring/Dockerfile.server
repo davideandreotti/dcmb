@@ -1,0 +1,64 @@
+FROM ubuntu:22.04
+
+RUN apt-get update && apt-get install -y \
+    python3 python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY dummyServer.py .
+COPY certs_server.py .
+COPY echo_server.py .
+COPY start.sh .
+
+RUN pip3 install flask requests
+
+#CMD [/bin/bash]
+
+#CMD ["python3", "dummyServer.py"]
+
+# Installa tool necessari
+RUN apt-get update && apt-get install -y \
+    bash git curl tar build-essential ca-certificates iputils-ping
+    #&& rm -rf /var/lib/apt/lists/*
+
+WORKDIR /root
+
+# Scarica una versione bootstrap di Go (serve per compilare cfgo)
+RUN curl -L https://go.dev/dl/go1.21.1.linux-amd64.tar.gz -o /tmp/go-bootstrap.tar.gz \
+    && tar -C /usr/local -xzf /tmp/go-bootstrap.tar.gz
+
+ENV PATH=$PATH:/usr/local/go/bin
+
+ENV GOROOT_BOOTSTRAP=/usr/local/go
+
+# Copia la tua Go modificata (cfgo)
+COPY ../go /root/go
+
+# # Compila cfgo per Linux
+WORKDIR /root/go/src
+RUN ./make.bash
+
+COPY go.mod .
+COPY go.sum .
+RUN go mod tidy
+
+# # Aggiorna il PATH per usare la Go appena compilata
+ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/root/go/bin
+
+WORKDIR /certs 
+
+# generate an Ed25519 leaf certificate (required for DC signature)
+#RUN go run ~/go/src/crypto/tls/generate_cert.go -host server,localhost,127.0.0.1 -allowDC -ed25519
+#la commento perch+è passo i certificati alserver da fuori per autenticazione, del client, con CA
+
+RUN python3 -m pip install --user requests
+
+WORKDIR /app
+
+# Compila il tool generate_delegated_credential.go in un binario
+RUN /root/go/bin/go build -o /usr/local/bin/generate /root/go/src/crypto/tls/generate_delegated_credential.go
+
+#CMD ["python3", "certs_dummyServer.py"]
+
+#CMD ["./start.sh"]

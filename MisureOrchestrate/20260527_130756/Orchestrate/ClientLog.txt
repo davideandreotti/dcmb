@@ -1,0 +1,15 @@
+t1: [CLIENT] - ClientHello = 1779880109920685752 ns
+t27: [CLIENT] - TCPConnectStart = 1779880109921045119 ns
+t28: [CLIENT] - TCPConnectDone = 1779880109921825424 ns
+t20: [CLIENT] - TLSHandshakeStart = 1779880109922159975 ns
+t21: [CLIENT] - TLSHandshakeDoneError = 1779880109922862138 ns err=EOF
+
+===== ESPERIMENTO 1 =====
+--- OPERAZIONE 1 (esperimento 1) ---
+t30: [ORCH] - pacing_tick_reached = 1779880109909448098 ns
+t31: [ORCH] - request_dispatched = 1779880109909707127 ns
+t32: [ORCH] - request_completed = 1779880109927391010 ns
+WARN: risposta client non standard per richiesta 1: 2026/05/27 13:08:29 Calling: https://127.0.0.1:8443/function/init as client_id: client
+t1: [CLIENT] - ClientHello = 1779880109920685752 ns
+t27: [CLIENT] - TCPConnectStart = 1779880109921045119 ns
+t28: [CLIENT] - TCPConnectDone = 17798801099

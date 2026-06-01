@@ -1,0 +1,11 @@
+[GATEWAY] listening on :9443 using task host tasks.tlmsp_mb_operator_warm selection_policy=first
+
+===== ESPERIMENTO 1 =====
+
+===== ESPERIMENTO 2 =====
+
+===== ESPERIMENTO 3 =====
+
+===== ESPERIMENTO 4 =====
+
+===== ESPERIMENTO 5 =====

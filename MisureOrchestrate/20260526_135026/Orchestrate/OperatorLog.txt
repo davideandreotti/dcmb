@@ -1,0 +1,86 @@
+t34: [OPERATOR] - process_start = 1779796232113774298 ns
+t35: [OPERATOR] - ready_for_assignment = 1779796232113796851 ns
+t34: [OPERATOR] - process_start = 1779796232061741656 ns
+t35: [OPERATOR] - ready_for_assignment = 1779796232061838898 ns
+2026/05/26 11:50:33 http: TLS handshake error from 10.0.1.218:38966: EOF
+t29: [OPERATOR] - gateway_to_operator_received = 1779796233323487757 ns
+t2: [OPERATOR] - ClientHelloLatency = 1779796233323507268 ns
+t3: [OPERATOR] - ClientHello = 1779796233323513941 ns
+t8: [OPERATOR] - CertsToMLatency = 1779796233344143560 ns
+t9: [OPERATOR] - ServerHello = 1779796233344279038 ns
+t34: [OPERATOR] - process_start = 1779796231919117589 ns
+t35: [OPERATOR] - ready_for_assignment = 1779796231919200227 ns
+t34: [OPERATOR] - process_start = 1779796232022915513 ns
+t35: [OPERATOR] - ready_for_assignment = 1779796232022946989 ns
+t34: [OPERATOR] - process_start = 1779796232093865680 ns
+t35: [OPERATOR] - ready_for_assignment = 1779796232094002834 ns
+t29: [OPERATOR] - gateway_to_operator_received = 1779796234322694859 ns
+t2: [OPERATOR] - ClientHelloLatency = 1779796234322716132 ns
+t3: [OPERATOR] - ClientHello = 1779796234322723484 ns
+t8: [OPERATOR] - CertsToMLatency = 1779796234352410111 ns
+t9: [OPERATOR] - ServerHello = 1779796234352444986 ns
+t34: [OPERATOR] - process_start = 1779796234848881165 ns
+t35: [OPERATOR] - ready_for_assignment = 1779796234848901576 ns
+t29: [OPERATOR] - gateway_to_operator_received = 1779796235312378002 ns
+t2: [OPERATOR] - ClientHelloLatency = 1779796235312397912 ns
+t3: [OPERATOR] - ClientHello = 1779796235312399641 ns
+t8: [OPERATOR] - CertsToMLatency = 1779796235321724535 ns
+t9: [OPERATOR] - ServerHello = 1779796235321732725 ns
+t34: [OPERATOR] - process_start = 1779796235529601726 ns
+t35: [OPERATOR] - ready_for_assignment = 1779796235529629304 ns
+t34: [OPERATOR] - process_start = 1779796235807894569 ns
+t35: [OPERATOR] - ready_for_assignment = 1779796235808011273 ns
+t34: [OPERATOR] - process_start = 1779796235903592387 ns
+t35: [OPERATOR] - ready_for_assignment = 1779796235903616022 ns
+t34: [OPERATOR] - process_start = 1779796235972865435 ns
+t35: [OPERATOR] - ready_for_assignment = 1779796235972894638 ns
+t34: [OPERATOR] - process_start = 1779796236059644108 ns
+t35: [OPERATOR] - ready_for_assignment = 1779796236059680545 ns
+t34: [OPERATOR] - process_start = 1779796236097469588 ns
+t35: [OPERATOR] - ready_for_assignment = 1779796236099224116 ns
+t29: [OPERATOR] - gateway_to_operator_received = 1779796236312131235 ns
+t2: [OPERATOR] - ClientHelloLatency = 1779796236312142083 ns
+t3: [OPERATOR] - ClientHello = 1779796236312143908 ns
+t8: [OPERATOR] - CertsToMLatency = 1779796236319846407 ns
+t9: [OPERATOR] - ServerHello = 1779796236319857368 ns
+t34: [OPERATOR] - process_start = 1779796236422339317 ns
+t35: [OPERATOR] - ready_for_assignment = 1779796236422376340 ns
+t34: [OPERATOR] - process_start = 1779796236490066150 ns
+t35: [OPERATOR] - ready_for_assignment = 1779796236490096089 ns
+t34: [OPERATOR] - process_start = 1779796236733516503 ns
+t35: [OPERATOR] - ready_for_assignment = 1779796236733540426 ns
+t34: [OPERATOR] - process_start = 1779796236746686105 ns
+t35: [OPERATOR] - ready_for_assignment = 1779796236746714989 ns
+t34: [OPERATOR] - process_start = 1779796236840331990 ns
+t35: [OPERATOR] - ready_for_assignment = 1779796236840382276 ns
+t34: [OPERATOR] - process_start = 1779796236932149326 ns
+t35: [OPERATOR] - ready_for_assignment = 1779796236932214732 ns
+t34: [OPERATOR] - process_start = 1779796237064695265 ns
+t35: [OPERATOR] - ready_for_assignment = 1779796237064733980 ns
+t34: [OPERATOR] - process_start = 1779796237092710942 ns
+t35: [OPERATOR] - ready_for_assignment = 1779796237092951704 ns
+t34: [OPERATOR] - process_start = 1779796237199621099 ns
+t35: [OPERATOR] - ready_for_assignment = 1779796237199670397 ns
+t34: [OPERATOR] - process_start = 1779796237217081353 ns
+t35: [OPERATOR] - ready_for_assignment = 1779796237217185391 ns
+t34: [OPERATOR] - process_start = 1779796237251376212 ns
+t35: [OPERATOR] - ready_for_assignment = 1779796237251409696 ns
+t34: [OPERATOR] - process_start = 1779796237293801921 ns
+t35: [OPERATOR] - ready_for_assignment = 1779796237293831889 ns
+t29: [OPERATOR] - gateway_to_operator_received = 1779796237314511623 ns
+t2: [OPERATOR] - ClientHelloLatency = 1779796237314521582 ns
+t3: [OPERATOR] - ClientHello = 1779796237314524366 ns
+t34: [OPERATOR] - process_start = 1779796237319154307 ns
+t35: [OPERATOR] - ready_for_assignment = 1779796237319193071 ns
+t8: [OPERATOR] - CertsToMLatency = 1779796237325304881 ns
+t9: [OPERATOR] - ServerHello = 1779796237325313558 ns
+
+===== ESPERIMENTO 1 =====
+
+===== ESPERIMENTO 2 =====
+
+===== ESPERIMENTO 3 =====
+
+===== ESPERIMENTO 4 =====
+
+===== ESPERIMENTO 5 =====

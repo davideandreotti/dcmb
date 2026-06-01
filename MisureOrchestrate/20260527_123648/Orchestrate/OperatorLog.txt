@@ -1,0 +1,52 @@
+t34: [OPERATOR] - process_start = 1779878214978874706 ns
+t35: [OPERATOR] - ready_for_assignment = 1779878214978895339 ns
+t34: [OPERATOR] - process_start = 1779878215051077111 ns
+t35: [OPERATOR] - ready_for_assignment = 1779878215051107180 ns
+t34: [OPERATOR] - process_start = 1779878215081209631 ns
+t35: [OPERATOR] - ready_for_assignment = 1779878215081229442 ns
+t34: [OPERATOR] - process_start = 1779878214791025358 ns
+t35: [OPERATOR] - ready_for_assignment = 1779878214791046115 ns
+t34: [OPERATOR] - process_start = 1779878214911470638 ns
+t35: [OPERATOR] - ready_for_assignment = 1779878214911493242 ns
+t34: [OPERATOR] - process_start = 1779878215024597451 ns
+t35: [OPERATOR] - ready_for_assignment = 1779878215024620941 ns
+t34: [OPERATOR] - process_start = 1779878217852160272 ns
+t35: [OPERATOR] - ready_for_assignment = 1779878217852188244 ns
+t34: [OPERATOR] - process_start = 1779878218827728982 ns
+t35: [OPERATOR] - ready_for_assignment = 1779878218827756374 ns
+t34: [OPERATOR] - process_start = 1779878219069869647 ns
+t35: [OPERATOR] - ready_for_assignment = 1779878219070125615 ns
+t34: [OPERATOR] - process_start = 1779878219153855603 ns
+t35: [OPERATOR] - ready_for_assignment = 1779878219153878493 ns
+t34: [OPERATOR] - process_start = 1779878219496217191 ns
+t35: [OPERATOR] - ready_for_assignment = 1779878219496244077 ns
+t34: [OPERATOR] - process_start = 1779878219599786945 ns
+t35: [OPERATOR] - ready_for_assignment = 1779878219599966817 ns
+t34: [OPERATOR] - process_start = 1779878219695319557 ns
+t35: [OPERATOR] - ready_for_assignment = 1779878219695343012 ns
+t34: [OPERATOR] - process_start = 1779878219728023677 ns
+t35: [OPERATOR] - ready_for_assignment = 1779878219728047828 ns
+t34: [OPERATOR] - process_start = 1779878219807263936 ns
+t35: [OPERATOR] - ready_for_assignment = 1779878219807285464 ns
+t34: [OPERATOR] - process_start = 1779878219817625459 ns
+t35: [OPERATOR] - ready_for_assignment = 1779878219817645022 ns
+t34: [OPERATOR] - process_start = 1779878219930320943 ns
+t35: [OPERATOR] - ready_for_assignment = 1779878219930460200 ns
+t34: [OPERATOR] - process_start = 1779878219940106565 ns
+t35: [OPERATOR] - ready_for_assignment = 1779878219940130988 ns
+t34: [OPERATOR] - process_start = 1779878220050169261 ns
+t35: [OPERATOR] - ready_for_assignment = 1779878220050195965 ns
+t34: [OPERATOR] - process_start = 1779878220061708353 ns
+t35: [OPERATOR] - ready_for_assignment = 1779878220061740570 ns
+t34: [OPERATOR] - process_start = 1779878220170184000 ns
+t35: [OPERATOR] - ready_for_assignment = 1779878220170209749 ns
+
+===== ESPERIMENTO 1 =====
+
+===== ESPERIMENTO 2 =====
+
+===== ESPERIMENTO 3 =====
+
+===== ESPERIMENTO 4 =====
+
+===== ESPERIMENTO 5 =====

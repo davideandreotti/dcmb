@@ -1,0 +1,40 @@
+FROM ubuntu:22.04
+
+# Installa tool necessari
+RUN apt-get update && apt-get install -y \
+    bash git curl tar build-essential ca-certificates iputils-ping
+    #&& rm -rf /var/lib/apt/lists/*
+
+WORKDIR /root
+
+# Scarica una versione bootstrap di Go (serve per compilare cfgo)
+RUN curl -L https://go.dev/dl/go1.21.1.linux-amd64.tar.gz -o /tmp/go-bootstrap.tar.gz \
+    && tar -C /usr/local -xzf /tmp/go-bootstrap.tar.gz
+
+ENV PATH=$PATH:/usr/local/go/bin
+
+ENV GOROOT_BOOTSTRAP=/usr/local/go
+
+# Copia la tua Go modificata (cfgo)
+COPY ../go /root/go
+
+# # Compila cfgo per Linux
+WORKDIR /root/go/src
+RUN ./make.bash
+
+# # Aggiorna il PATH per usare la Go appena compilata
+ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/root/go/bin
+
+# Crea la directory /certs che verrà popolata a runtime tramite volume
+WORKDIR /certs
+COPY ca.crt .
+WORKDIR /app
+COPY client.go .
+COPY go.mod .
+COPY go.sum .
+
+# # Compila il client
+RUN /root/go/bin/go mod tidy && GOOS=linux GOARCH=amd64 /root/go/bin/go build -o client client.go
+
+# # Comando di avvio
+#CMD ["./client "]

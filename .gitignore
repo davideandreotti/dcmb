@@ -1,0 +1,55 @@
+/**/vm/.vagrant/
+/ETSI/Middlebox/graph.png
+/ETSI/Middlebox/session.dat
+/ETSI/Middlebox/stderr.txt
+/ETSI/Middlebox/stdout.txt
+/ETSI/Middlebox/waiting.dat
+/ETSI/Middlebox/jwks.dat
+/ETSI/Middlebox/jwks_info.dat
+/OAuthTokenGetter/secrets.js
+/OAuthTokenGetter/refresh_token.txt
+/DC/go-compiled.tar
+/PerformanceMeasuring/**/*.res
+/PerformanceMeasuring/*/
+/PerformanceMeasuring/*.png
+/DC/Middlebox/*.dat
+/DC/certs/dc.cred
+/DC/certs/dckey.pem
+/ETSI/NewMiddlebox/*.dat
+go.sum
+/certs_external/
+/DC/Middlebox/enclave-key.pem
+/DC/Middlebox/build/
+/DC/old/go/
+/PerformanceMeasuring/go/
+/DC/Middlebox/build/
+kubectl
+kubectl.sha256
+
+# macOS metadata
+.DS_Store
+**/.DS_Store
+
+# Editor state
+.vscode/
+**/.vscode/
+
+# Python/cache artifacts
+__pycache__/
+**/__pycache__/
+*.pyc
+
+# Logs and generated measurement outputs
+*.log
+Log_container.txt
+**/Log_container.txt
+**/Runtime/
+**/Analisi/
+**/*.pdf
+**/*.png
+
+# Local/generated binaries
+DC/Middlebox/client.bck
+DC/Middlebox/cmd/client/client
+DC/Middlebox/cmd/middlebox/middlebox
+**/generate_dc_tool

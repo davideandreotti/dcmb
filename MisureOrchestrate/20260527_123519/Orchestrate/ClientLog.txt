@@ -1,0 +1,75 @@
+t1: [CLIENT] - ClientHello = 1779878150122619886 ns
+t27: [CLIENT] - TCPConnectStart = 1779878150123022975 ns
+t28: [CLIENT] - TCPConnectDone = 1779878150123751954 ns
+t20: [CLIENT] - TLSHandshakeStart = 1779878150123861082 ns
+t21: [CLIENT] - TLSHandshakeDoneError = 1779878150124662968 ns err=EOF
+t1: [CLIENT] - ClientHello = 1779878151112798900 ns
+t27: [CLIENT] - TCPConnectStart = 1779878151113049672 ns
+t28: [CLIENT] - TCPConnectDone = 1779878151113322436 ns
+t20: [CLIENT] - TLSHandshakeStart = 1779878151113352561 ns
+t21: [CLIENT] - TLSHandshakeDoneError = 1779878151114082633 ns err=EOF
+t1: [CLIENT] - ClientHello = 1779878152108171868 ns
+t27: [CLIENT] - TCPConnectStart = 1779878152108264846 ns
+t28: [CLIENT] - TCPConnectDone = 1779878152108384921 ns
+t20: [CLIENT] - TLSHandshakeStart = 1779878152108415801 ns
+t21: [CLIENT] - TLSHandshakeDoneError = 1779878152108673671 ns err=EOF
+t1: [CLIENT] - ClientHello = 1779878153106729524 ns
+t27: [CLIENT] - TCPConnectStart = 1779878153106796941 ns
+t28: [CLIENT] - TCPConnectDone = 1779878153106886775 ns
+t20: [CLIENT] - TLSHandshakeStart = 1779878153106901646 ns
+t21: [CLIENT] - TLSHandshakeDoneError = 1779878153107465976 ns err=read tcp 127.0.0.1:46120->127.0.0.1:8443: read: connection reset by peer
+t1: [CLIENT] - ClientHello = 1779878154106417176 ns
+t27: [CLIENT] - TCPConnectStart = 1779878154106487316 ns
+t28: [CLIENT] - TCPConnectDone = 1779878154106571822 ns
+t20: [CLIENT] - TLSHandshakeStart = 1779878154106591273 ns
+t21: [CLIENT] - TLSHandshakeDoneError = 1779878154106792596 ns err=read tcp 127.0.0.1:46136->127.0.0.1:8443: read: connection reset by peer
+
+===== ESPERIMENTO 1 =====
+--- OPERAZIONE 1 (esperimento 1) ---
+t30: [ORCH] - pacing_tick_reached = 1779878150103821757 ns
+t31: [ORCH] - request_dispatched = 1779878150106935432 ns
+t32: [ORCH] - request_completed = 1779878150130549105 ns
+WARN: risposta client non standard per richiesta 1: 2026/05/27 12:35:50 Calling: https://127.0.0.1:8443/function/init as client_id: client
+t1: [CLIENT] - ClientHello = 1779878150122619886 ns
+t27: [CLIENT] - TCPConnectStart = 1779878150123022975 ns
+t28: [CLIENT] - TCPConnectDone = 17798781501
+
+===== ESPERIMENTO 2 =====
+--- OPERAZIONE 1 (esperimento 2) ---
+t30: [ORCH] - pacing_tick_reached = 1779878151104345460 ns
+t31: [ORCH] - request_dispatched = 1779878151104396790 ns
+t32: [ORCH] - request_completed = 1779878151118319337 ns
+WARN: risposta client non standard per richiesta 2: 2026/05/27 12:35:51 Calling: https://127.0.0.1:8443/function/init as client_id: client
+t1: [CLIENT] - ClientHello = 1779878151112798900 ns
+t27: [CLIENT] - TCPConnectStart = 1779878151113049672 ns
+t28: [CLIENT] - TCPConnectDone = 17798781511
+
+===== ESPERIMENTO 3 =====
+--- OPERAZIONE 1 (esperimento 3) ---
+t30: [ORCH] - pacing_tick_reached = 1779878152104365014 ns
+t31: [ORCH] - request_dispatched = 1779878152104407374 ns
+t32: [ORCH] - request_completed = 1779878152112039769 ns
+WARN: risposta client non standard per richiesta 3: 2026/05/27 12:35:52 Calling: https://127.0.0.1:8443/function/init as client_id: client
+t1: [CLIENT] - ClientHello = 1779878152108171868 ns
+t27: [CLIENT] - TCPConnectStart = 1779878152108264846 ns
+t28: [CLIENT] - TCPConnectDone = 17798781521
+
+===== ESPERIMENTO 4 =====
+--- OPERAZIONE 1 (esperimento 4) ---
+t30: [ORCH] - pacing_tick_reached = 1779878153104288132 ns
+t31: [ORCH] - request_dispatched = 1779878153104301044 ns
+t32: [ORCH] - request_completed = 1779878153110915323 ns
+WARN: risposta client non standard per richiesta 4: 2026/05/27 12:35:53 Calling: https://127.0.0.1:8443/function/init as client_id: client
+t1: [CLIENT] - ClientHello = 1779878153106729524 ns
+t27: [CLIENT] - TCPConnectStart = 1779878153106796941 ns
+t28: [CLIENT] - TCPConnectDone = 17798781531
+
+===== ESPERIMENTO 5 =====
+--- OPERAZIONE 1 (esperimento 5) ---
+t30: [ORCH] - pacing_tick_reached = 1779878154104183913 ns
+t31: [ORCH] - request_dispatched = 1779878154104196609 ns
+t32: [ORCH] - request_completed = 1779878154109691336 ns
+WARN: risposta client non standard per richiesta 5: 2026/05/27 12:35:54 Calling: https://127.0.0.1:8443/function/init as client_id: client
+t1: [CLIENT] - ClientHello = 1779878154106417176 ns
+t27: [CLIENT] - TCPConnectStart = 1779878154106487316 ns
+t28: [CLIENT] - TCPConnectDone = 17798781541

@@ -1,0 +1,52 @@
+[SERVER] cert service listening on :5000
+[SERVER] Application TLS server running on :8000
+t4: [SERVER] - ClientHelloLatency = 1779796325811414728 ns
+[SERVER] SNI requested: server
+t5: [SERVER] - BeginAutoGenCerts = 1779796325811885436 ns
+t6: [SERVER] - EndAutoGenCerts = 1779796325818816665 ns
+[SERVER] t7 Sending to middlebox: 1779796325818944275 ns
+t25: [SERVER APP] RequestReceived = 1779796325829604523 ns
+172.18.0.8 - - [26/May/2026 13:52:05] "GET /function/init HTTP/1.1" 200 -
+t26: [SERVER APP] ResponseSent = 1779796325829913519 ns
+t4: [SERVER] - ClientHelloLatency = 1779796326819444149 ns
+[SERVER] SNI requested: server
+t5: [SERVER] - BeginAutoGenCerts = 1779796326820283014 ns
+t6: [SERVER] - EndAutoGenCerts = 1779796326836255802 ns
+[SERVER] t7 Sending to middlebox: 1779796326836538456 ns
+t25: [SERVER APP] RequestReceived = 1779796326853235362 ns
+172.18.0.4 - - [26/May/2026 13:52:06] "GET /function/init HTTP/1.1" 200 -
+t26: [SERVER APP] ResponseSent = 1779796326853898074 ns
+t4: [SERVER] - ClientHelloLatency = 1779796327809452322 ns
+[SERVER] SNI requested: server
+t5: [SERVER] - BeginAutoGenCerts = 1779796327810145195 ns
+t6: [SERVER] - EndAutoGenCerts = 1779796327819395796 ns
+[SERVER] t7 Sending to middlebox: 1779796327819530962 ns
+t25: [SERVER APP] RequestReceived = 1779796327824600701 ns
+172.18.0.4 - - [26/May/2026 13:52:07] "GET /function/init HTTP/1.1" 200 -
+t26: [SERVER APP] ResponseSent = 1779796327825374074 ns
+t4: [SERVER] - ClientHelloLatency = 1779796328811031510 ns
+[SERVER] SNI requested: server
+t5: [SERVER] - BeginAutoGenCerts = 1779796328811334969 ns
+t6: [SERVER] - EndAutoGenCerts = 1779796328816027109 ns
+[SERVER] t7 Sending to middlebox: 1779796328816123195 ns
+t25: [SERVER APP] RequestReceived = 1779796328823573397 ns
+172.18.0.7 - - [26/May/2026 13:52:08] "GET /function/init HTTP/1.1" 200 -
+t26: [SERVER APP] ResponseSent = 1779796328823795118 ns
+t4: [SERVER] - ClientHelloLatency = 1779796329820111738 ns
+[SERVER] SNI requested: server
+t5: [SERVER] - BeginAutoGenCerts = 1779796329821048916 ns
+t6: [SERVER] - EndAutoGenCerts = 1779796329836029587 ns
+[SERVER] t7 Sending to middlebox: 1779796329836310230 ns
+t25: [SERVER APP] RequestReceived = 1779796329852493253 ns
+172.18.0.11 - - [26/May/2026 13:52:09] "GET /function/init HTTP/1.1" 200 -
+t26: [SERVER APP] ResponseSent = 1779796329853229880 ns
+
+===== ESPERIMENTO 1 =====
+
+===== ESPERIMENTO 2 =====
+
+===== ESPERIMENTO 3 =====
+
+===== ESPERIMENTO 4 =====
+
+===== ESPERIMENTO 5 =====

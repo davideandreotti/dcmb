@@ -1,0 +1,41 @@
+# Manifest Gramine per l'operator middlebox nel contesto GSC.
+# GSC genera automaticamente:
+#   - [[sgx.trusted_files]] per tutti i file dell'immagine Docker base
+#   - i mount della glibc runtime
+#   - l'entrypoint
+# Qui si specificano solo le configurazioni specifiche dell'applicazione.
+
+[loader.env]
+GODEBUG = "netdns=go"
+OPERATOR_MODE = { passthrough = true }
+OPERATOR_ID = { passthrough = true }
+OPERATOR_DEFAULT_SNI = { passthrough = true }
+OPERATOR_EXIT_AFTER_REQUEST = { passthrough = true }
+OPERATOR_CONSUME_AFTER_REQUEST = { passthrough = true }
+MB_MINIMAL_LOGS = { passthrough = true }
+
+[fs]
+mounts = [
+    # Certificati DC montati a runtime da MisureOrchestrate_shield.py
+    { path = "/certs", uri = "file:/certs", type = "chroot" },
+    { path = "/home/bonsai/Desktop/MasterThesis/DC/certs", uri = "file:/home/bonsai/Desktop/MasterThesis/DC/certs", type = "chroot" },
+]
+
+[sgx]
+debug = false
+enclave_size = "2G"
+edmm_enable = false
+max_threads = 16
+remote_attestation = "none"
+isvprodid = 0
+isvsvn = 0
+enable_stats = false
+use_exinfo = false
+
+sgx.allowed_files = [
+    "file:/etc/host.conf",
+    "file:/etc/resolv.conf",
+    "file:/etc/ssl/certs/ca-certificates.crt",
+    "file:/certs/",
+    "file:/home/bonsai/Desktop/MasterThesis/DC/certs/",
+]

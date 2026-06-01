@@ -1,0 +1,56 @@
+title Sequence Diagram
+
+actor Client
+participant Middlebox
+participant Server (5000)
+participant Server (8000)
+
+note over Client: t1 request start
+note over Client: t20 TLSHandshakeStart
+Client->>Middlebox: HTTPS /function/init (ClientHello)
+
+//note over Middlebox: t2 ClientHelloLatency
+//note over Middlebox: t3 before cert fetch
+
+Middlebox ->> Middlebox: certCache[serverName]
+
+alt Certificato delegato in cache (warm)
+ note over Middlebox: cache hit
+else Certificato delegato non in cache (cold)
+Middlebox->>Server (5000): POST /certs {sni}
+//note over Server (5000): t4 request received
+//note over Server (5000): t5 begin DC generation
+Server (5000) ->> Server (5000) : run_generate_dc()
+//note over Server (5000): t6 end DC generation
+//note over Server (5000): t7 send response
+Server (5000)-->>Middlebox: {cert_b64,key_b64,dc_cred_b64,dc_key_b64}
+
+
+note over Middlebox: t8 response received
+//note over Middlebox: t11 parse JSON
+//note over Middlebox: t12 extract fields
+//note over Middlebox: t13 decode cert/key
+//note over Middlebox: t14 set upstream trust pool
+//note over Middlebox: t15 build delegated cert
+//note over Middlebox: t16 cache write
+//note over Middlebox: t17 end build path
+//note over Middlebox: t18 return from fetch
+//note over Middlebox: t19 cache lookup
+
+Middlebox ->> Middlebox: parse JSON and extract fields
+end
+
+Middlebox-->>Client: TLS ServerHello + Certificate/Delegated Credential
+
+//note over Client: t22 CertValidationStart
+Client ->> Client : Server cert validation
+//note over Client: t23 CertValidationDone
+note over Client: t21 TLSHandshakeDone
+
+Client->>Middlebox: HTTPS GET/POST /function/init
+Middlebox->>Server (8000): HTTP GET/POST /function/init
+Server (8000) -->>Middlebox: HTTP 200 + body
+Middlebox-->>Client: HTTP 200 + body
+note over Client: t10 response observed
+
+

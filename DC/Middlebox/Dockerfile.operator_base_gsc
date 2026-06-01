@@ -1,0 +1,28 @@
+FROM ubuntu:22.04
+
+# Dipendenze runtime per il binario operator Go (linking dinamico glibc)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    libssl3 \
+ && rm -rf /var/lib/apt/lists/*
+
+# Directory certificati montate a runtime
+RUN mkdir -p /certs /home/bonsai/Desktop/MasterThesis/DC/certs
+
+# Binario operator precompilato: viene copiato dall'host durante la build GSC.
+# DEVE essere compilato con cfgo (il fork Go con supporto Delegated Credentials)
+# prima di eseguire: gsc build mb_operator_base Dockerfile.operator_base_gsc
+COPY middlebox_operator /app/operator
+RUN chmod +x /app/operator
+
+WORKDIR /app
+
+# Variabili d'ambiente di default (sovrascrivibili a runtime)
+ENV OPERATOR_MODE=warm
+ENV OPERATOR_ID=operator_1
+ENV OPERATOR_DEFAULT_SNI=
+ENV OPERATOR_EXIT_AFTER_REQUEST=true
+ENV OPERATOR_CONSUME_AFTER_REQUEST=true
+ENV MB_MINIMAL_LOGS=1
+
+ENTRYPOINT ["/app/operator"]
