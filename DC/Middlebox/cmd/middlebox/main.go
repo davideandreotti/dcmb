@@ -4,11 +4,13 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -18,26 +20,32 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"os/signal"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
+
+	benchtrace "dc/middlebox/internal/trace"
 )
 
 const (
 	operatorTLSAddr  = ":8443"
 	operatorHTTPAddr = ":18080"
-	operatorTarget   = "https://server:8000"
-	operatorCertURL  = "http://server:5000"
 
-	expectedSNI = "server"
-	defaultCA   = "/home/bonsai/Desktop/MasterThesis/certs_external/ca.crt"
+	defaultOperatorTarget  = "https://localhost:8000"
+	defaultOperatorCertURL = "http://localhost:5000"
+	expectedSNI            = "server"
+	defaultCA              = "/home/bonsai/dcmb/certs_external/ca.crt"
 )
 
 var (
-	reuseDC     bool
-	minimalLogs bool
-	logLevel    string
+	reuseDC         bool
+	minimalLogs     bool
+	logLevel        string
+	operatorTarget  string
+	operatorCertURL string
 )
 
 type certResponse struct {
@@ -50,6 +58,8 @@ type certResponse struct {
 type delegationMaterial struct {
 	cert tls.Certificate
 }
+
+type traceIDContextKey struct{}
 
 type operatorState struct {
 	id               string
@@ -68,7 +78,55 @@ var (
 	certCache         = make(map[string]*tls.Certificate)
 	certMu            sync.RWMutex
 	delegationFetchMu sync.Mutex
+	firstDCDiscarded  atomic.Bool
 )
+
+func cacheFetchedDelegation(sni string, cert *tls.Certificate) bool {
+	// Comment out this block to keep the first fetched delegated credential.
+	if firstDCDiscarded.CompareAndSwap(false, true) {
+		info("[OPERATOR] discarding first fetched delegated credential")
+		return false
+	}
+
+	certMu.Lock()
+	certCache[sni] = cert
+	certMu.Unlock()
+	return true
+}
+
+func writeAttestation(tag string) ([]byte, error) {
+	benchtrace.Mark(benchtrace.MiddleboxAttestationStart, tag, 0)
+	attType, err := os.ReadFile("/dev/attestation/attestation_type")
+	if err != nil {
+		benchtrace.Mark(benchtrace.MiddleboxAttestationDone, tag, 1)
+		return nil, fmt.Errorf("failed to read /dev/attestation/attestation_type: %w", err)
+	}
+
+	fmt.Printf("attestation_type=%s\n", string(attType))
+
+	// SGX REPORTDATA is 64 bytes.
+	// For a first test, bind a fixed tag into the quote.
+	// Later, replace this with a verifier challenge or a public-key hash.
+	var reportData [64]byte
+	sum := sha256.Sum256([]byte(tag))
+	copy(reportData[:], sum[:])
+
+	if err := os.WriteFile("/dev/attestation/user_report_data", reportData[:], 0); err != nil {
+		benchtrace.Mark(benchtrace.MiddleboxAttestationDone, tag, 2)
+		return nil, fmt.Errorf("failed to write /dev/attestation/user_report_data: %w", err)
+	}
+
+	quote, err := os.ReadFile("/dev/attestation/quote")
+	if err != nil {
+		benchtrace.Mark(benchtrace.MiddleboxAttestationDone, tag, 3)
+		return nil, fmt.Errorf("failed to read /dev/attestation/quote: %w", err)
+	}
+
+	fmt.Printf("quote_size=%d\n", len(quote))
+	// fmt.Printf("quote_base64=%s\n", base64.StdEncoding.EncodeToString(quote))
+	benchtrace.Mark(benchtrace.MiddleboxAttestationDone, tag, uint64(len(quote)))
+	return quote, nil
+}
 
 func info(msg string) {
 	if (minimalLogs && !strings.HasPrefix(msg, "t")) || (logLevel != "debug") {
@@ -89,6 +147,13 @@ func loadCertPool(path string) (*x509.CertPool, error) {
 	}
 
 	return pool, nil
+}
+
+func getEnvDefault(key string, fallback string) string {
+	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+		return value
+	}
+	return fallback
 }
 
 func clearDelegationState() {
@@ -149,60 +214,82 @@ func parseDelegatedPrivateKey(keyPEM []byte) (any, error) {
 }
 
 func fetchDelegationMaterial(sni string) (*delegationMaterial, error) {
+	benchtrace.Mark(benchtrace.MiddleboxDelegationFetch, sni, 0)
 	payload := map[string]string{"sni": sni}
 
+	if os.Getenv("MBX_EMIT_QUOTE") == "1" {
+		t0 := time.Now()
+		att, err := writeAttestation("middlebox-attestation-test")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "attestation failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Attestation quote generated in %d ms\n", time.Since(t0).Milliseconds())
+		payload["quote"] = base64.StdEncoding.EncodeToString(att)
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
+		benchtrace.Mark(benchtrace.MiddleboxDelegationFetched, sni, 1)
 		return nil, err
 	}
 
 	resp, err := http.Post(operatorCertURL+"/certs", "application/json", bytes.NewReader(body))
 	if err != nil {
+		benchtrace.Mark(benchtrace.MiddleboxDelegationFetched, sni, 2)
 		return nil, fmt.Errorf("failed contacting server: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
+		benchtrace.Mark(benchtrace.MiddleboxDelegationFetched, sni, uint64(resp.StatusCode))
 		return nil, fmt.Errorf("server returned %d: %s", resp.StatusCode, string(b))
 	}
 
 	var data certResponse
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		benchtrace.Mark(benchtrace.MiddleboxDelegationFetched, sni, 3)
 		return nil, err
 	}
 
 	if data.DCCredB64 == "" || data.DCKeyB64 == "" {
+		benchtrace.Mark(benchtrace.MiddleboxDelegationFetched, sni, 4)
 		return nil, fmt.Errorf("invalid certificate response from server")
 	}
 
 	certBytes, err := base64.StdEncoding.DecodeString(data.CertB64)
 	if err != nil {
+		benchtrace.Mark(benchtrace.MiddleboxDelegationFetched, sni, 5)
 		return nil, err
 	}
 
 	dcBytes, err := base64.StdEncoding.DecodeString(data.DCCredB64)
 	if err != nil {
+		benchtrace.Mark(benchtrace.MiddleboxDelegationFetched, sni, 6)
 		return nil, err
 	}
 
 	dcKeyBytes, err := base64.StdEncoding.DecodeString(data.DCKeyB64)
 	if err != nil {
+		benchtrace.Mark(benchtrace.MiddleboxDelegationFetched, sni, 7)
 		return nil, err
 	}
 
 	certDERs, leaf, err := parseCertificateChain(certBytes)
 	if err != nil {
+		benchtrace.Mark(benchtrace.MiddleboxDelegationFetched, sni, 8)
 		return nil, err
 	}
 
 	dc, err := tls.UnmarshalDelegatedCredential(dcBytes)
 	if err != nil {
+		benchtrace.Mark(benchtrace.MiddleboxDelegationFetched, sni, 9)
 		return nil, fmt.Errorf("failed to unmarshal delegated credential: %w", err)
 	}
 
 	priv, err := parseDelegatedPrivateKey(dcKeyBytes)
 	if err != nil {
+		benchtrace.Mark(benchtrace.MiddleboxDelegationFetched, sni, 10)
 		return nil, err
 	}
 
@@ -215,6 +302,7 @@ func fetchDelegationMaterial(sni string) (*delegationMaterial, error) {
 		tls.DelegatedCredentialPair{DC: dc, PrivateKey: priv},
 	)
 
+	benchtrace.Mark(benchtrace.MiddleboxDelegationFetched, sni, 0)
 	return &delegationMaterial{cert: baseCert}, nil
 }
 
@@ -239,6 +327,7 @@ func getOrFetchCertificate(chi *tls.ClientHelloInfo) (*tls.Certificate, error) {
 		certMu.RUnlock()
 
 		if ok && cert != nil {
+			benchtrace.Mark(benchtrace.MiddleboxDelegationCacheHit, sni, 0)
 			info("[OPERATOR] reuse_dc=true: using cached delegated credential")
 			info(fmt.Sprintf("t9: [OPERATOR] - ServerHello = %d ns", time.Now().UnixNano()))
 			return cert, nil
@@ -256,6 +345,7 @@ func getOrFetchCertificate(chi *tls.ClientHelloInfo) (*tls.Certificate, error) {
 		certMu.RUnlock()
 
 		if ok && cert != nil {
+			benchtrace.Mark(benchtrace.MiddleboxDelegationCacheHit, sni, 0)
 			info("[OPERATOR] reuse_dc=true: using cached delegated credential")
 			info(fmt.Sprintf("t9: [OPERATOR] - ServerHello = %d ns", time.Now().UnixNano()))
 			return cert, nil
@@ -264,6 +354,7 @@ func getOrFetchCertificate(chi *tls.ClientHelloInfo) (*tls.Certificate, error) {
 		info("[OPERATOR] reuse_dc=false: forcing fresh delegated credential")
 	}
 
+	benchtrace.Mark(benchtrace.MiddleboxDelegationMiss, sni, 0)
 	material, err := fetchDelegationMaterial(sni)
 	if err != nil {
 		return nil, err
@@ -271,9 +362,7 @@ func getOrFetchCertificate(chi *tls.ClientHelloInfo) (*tls.Certificate, error) {
 
 	cert := &material.cert
 	if reuseDC {
-		certMu.Lock()
-		certCache[sni] = cert
-		certMu.Unlock()
+		cacheFetchedDelegation(sni, cert)
 	}
 
 	info(fmt.Sprintf("t8: [OPERATOR] - CertsToMLatency = %d ns", time.Now().UnixNano()))
@@ -387,9 +476,14 @@ func prefetchIfNeeded(st *operatorState, defaultSNI string) {
 		return
 	}
 
-	certMu.Lock()
-	certCache[defaultSNI] = &material.cert
-	certMu.Unlock()
+	if !cacheFetchedDelegation(defaultSNI, &material.cert) {
+		st.ready.Store(true)
+		st.delegationReady.Store(false)
+
+		info(fmt.Sprintf("t35: [OPERATOR] - ready_for_assignment = %d ns", time.Now().UnixNano()))
+		info("[OPERATOR] auth prefetch discarded first delegated credential")
+		return
+	}
 
 	st.ready.Store(true)
 	st.delegationReady.Store(true)
@@ -408,12 +502,22 @@ func main() {
 	exitAfterRequestFlag := flag.Bool("exit_after_request", false, "exit process after one request")
 	minimalLogsFlag := flag.Bool("minimal_logs", true, "print only timestamp logs")
 	logLevelFlag := flag.String("log_level", "error", "log level: debug/error")
+	tracePathFlag := flag.String("trace", "", "trace output file; requires build tag trace")
+	traceBufferFlag := flag.Int("trace-buffer-events", 100000, "trace buffer capacity in events")
+	traceDropFlag := flag.Bool("trace-drop-on-full", true, "drop trace events instead of blocking when trace buffer is full")
 	//TODO: Add: 1) conditional build to keep only minimal setup in SGX case;
 	flag.Parse()
+
+	if err := benchtrace.Start(*tracePathFlag, *traceBufferFlag, *traceDropFlag); err != nil {
+		log.Fatalf("trace start: %v", err)
+	}
+	defer benchtrace.Stop()
 
 	reuseDC = *reuseDCFlag
 	minimalLogs = *minimalLogsFlag
 	logLevel = *logLevelFlag
+	operatorTarget = getEnvDefault("OPERATOR_TARGET", defaultOperatorTarget)
+	operatorCertURL = getEnvDefault("OPERATOR_CERT_URL", defaultOperatorCertURL)
 
 	info(fmt.Sprintf("t34: [OPERATOR] - process_start = %d ns", time.Now().UnixNano()))
 	info(fmt.Sprintf("[OPERATOR] reuse_dc=%v", reuseDC))
@@ -450,6 +554,10 @@ func main() {
 	proxy.Transport = &http.Transport{
 		//custom TLS dialer
 		DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			traceID, _ := ctx.Value(traceIDContextKey{}).(string)
+			if traceID == "" {
+				traceID = "upstream"
+			}
 
 			dialer := &net.Dialer{
 				Timeout:   3 * time.Second,
@@ -457,10 +565,13 @@ func main() {
 			}
 
 			// opens the TCP connection to the upstream server
+			benchtrace.Mark(benchtrace.MiddleboxUpstreamDialStart, traceID, 0)
 			conn, err := dialer.DialContext(ctx, network, addr)
 			if err != nil {
+				benchtrace.Mark(benchtrace.MiddleboxUpstreamDialDone, traceID, 1)
 				return nil, err
 			}
+			benchtrace.Mark(benchtrace.MiddleboxUpstreamDialDone, traceID, 0)
 
 			// opens the TLS connection with the upstream server
 			tlsConn := tls.Client(conn, &tls.Config{
@@ -469,21 +580,36 @@ func main() {
 			})
 
 			// performs the TLS handshake with the upstream server
+			benchtrace.Mark(benchtrace.MiddleboxUpstreamTLSStart, traceID, 0)
 			if err := tlsConn.HandshakeContext(ctx); err != nil {
 				_ = conn.Close()
+				benchtrace.Mark(benchtrace.MiddleboxUpstreamTLSDone, traceID, 1)
 				return nil, err
 			}
+			benchtrace.Mark(benchtrace.MiddleboxUpstreamTLSDone, traceID, 0)
 
 			return tlsConn, nil
 		},
 	}
 
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+		traceID := r.Header.Get("X-Trace-ID")
+		if traceID == "" {
+			traceID = st.id
+		}
+		benchtrace.Mark(benchtrace.MiddleboxProxyError, traceID, 1)
 		info(fmt.Sprintf("[OPERATOR] upstream error: %v", err))
 		http.Error(w, "bad gateway", http.StatusBadGateway)
 	}
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		traceID := r.Header.Get("X-Trace-ID")
+		if traceID == "" {
+			traceID = st.id
+		}
+		benchtrace.Mark(benchtrace.MiddleboxRequestStart, traceID, 0)
+		benchtrace.Mark(benchtrace.MiddleboxValidationStart, traceID, 0)
+		benchtrace.Mark(benchtrace.MiddleboxValidationDone, traceID, 0)
 		// if st.consumed.Load() {
 		// 	http.Error(w, "operator consumed", http.StatusServiceUnavailable)
 		// 	return
@@ -509,7 +635,9 @@ func main() {
 			info("[OPERATOR] serving with delegated credential already available")
 		}
 
+		r = r.WithContext(context.WithValue(r.Context(), traceIDContextKey{}, traceID))
 		proxy.ServeHTTP(w, r)
+		benchtrace.Mark(benchtrace.MiddleboxRequestDone, traceID, 0)
 
 		if !reuseDC {
 			info("[OPERATOR] reuse_dc=false: delegated credential was session-local")
@@ -534,12 +662,18 @@ func main() {
 		MinVersion: tls.VersionTLS13,
 		// SupportDelegatedCredential: true,
 		GetCertificate: func(chi *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			sni := chi.ServerName
+			if sni == "" {
+				sni = expectedSNI
+			}
+			benchtrace.Mark(benchtrace.MiddleboxTLSGetCertStart, sni, 0)
 			if !st.delegationReady.Load() {
 				info("[OPERATOR] delegation/auth with server: START")
 			}
 
 			cert, err := getOrFetchCertificate(chi)
 			if err != nil {
+				benchtrace.Mark(benchtrace.MiddleboxTLSGetCertDone, sni, 1)
 				return nil, err
 			}
 
@@ -548,6 +682,7 @@ func main() {
 				info("[OPERATOR] delegation/auth with server: DONE")
 			}
 
+			benchtrace.Mark(benchtrace.MiddleboxTLSGetCertDone, sni, 0)
 			return cert, nil
 		},
 	}
@@ -559,6 +694,24 @@ func main() {
 	}
 
 	info(fmt.Sprintf("[OPERATOR] %s mode=%s listening on %s", operatorID, mode, operatorTLSAddr))
+	fmt.Fprintf(os.Stderr, "[OPERATOR_READY] listening=%s mode=%s id=%s\n", operatorTLSAddr, mode, operatorID)
 
-	log.Fatal(srv.ListenAndServeTLS("", ""))
+	shutdownCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
+
+	go func() {
+		<-shutdownCtx.Done()
+		info("[OPERATOR] shutdown signal received")
+
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(ctx); err != nil {
+			info("[OPERATOR] graceful shutdown failed: " + err.Error())
+			_ = srv.Close()
+		}
+	}()
+
+	if err := srv.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Fatal(err)
+	}
 }

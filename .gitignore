@@ -17,7 +17,12 @@
 /DC/certs/dckey.pem
 /ETSI/NewMiddlebox/*.dat
 go.sum
-/certs_external/
+
+# Local certificate material generated after cloning.
+/certs_external/*
+!/certs_external/
+!/certs_external/README.md
+!/certs_external/generate_server_certs.sh
 /DC/Middlebox/enclave-key.pem
 /DC/Middlebox/build/
 /DC/old/go/
@@ -45,11 +50,20 @@ Log_container.txt
 **/Log_container.txt
 **/Runtime/
 **/Analisi/
+/DC/Middlebox/experiments/
 **/*.pdf
 **/*.png
 
 # Local/generated binaries
 DC/Middlebox/client.bck
+DC/Middlebox/client
+DC/Middlebox/middlebox
+DC/Middlebox/middlebox_gateway
 DC/Middlebox/cmd/client/client
 DC/Middlebox/cmd/middlebox/middlebox
+DC/Middlebox/cmd/gateway/gateway
 **/generate_dc_tool
+DC/Middlebox/middlebox.manifest.sgx
+DC/Middlebox/middlebox.manifest
+DC/Middlebox/certserver
+DC/Middlebox/sample-benchmarking-code

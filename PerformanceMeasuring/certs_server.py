@@ -5,7 +5,9 @@ import logging
 import os
 import time
 import json
+import hashlib
 import base64
+import binascii
 import ssl
 import subprocess
 import threading
@@ -46,6 +48,19 @@ DC_KEY = CERTS_DIR / "dckey.pem"
 GO_TOOL = os.environ.get("GO_TOOL", "/usr/local/bin/generate")
 GO_FALLBACK = PROJECT_ROOT / "DC" / "go" / "bin" / "go"
 GO_DC_SOURCE = PROJECT_ROOT / "DC" / "go" / "src" / "crypto" / "tls" / "generate_delegated_credential.go"
+
+QUOTE_VERIFIER_DIR = SCRIPT_DIR / "QuoteVerificationSample"
+QUOTE_VERIFIER_APP = Path(
+    os.environ.get("QUOTE_VERIFIER_APP", str(QUOTE_VERIFIER_DIR / "app"))
+).expanduser()
+if not QUOTE_VERIFIER_APP.is_absolute():
+    QUOTE_VERIFIER_APP = PROJECT_ROOT / QUOTE_VERIFIER_APP
+
+# Must match writeAttestation("middlebox-attestation-test") in DC/Middlebox/cmd/middlebox/main.go.
+QUOTE_REPORTDATA_TAG = "middlebox-attestation-test"
+QUOTE_REPORTDATA_BYTES = hashlib.sha256(QUOTE_REPORTDATA_TAG.encode("utf-8")).digest().ljust(64, b"\0")
+QUOTE_REPORTDATA_HEX = QUOTE_REPORTDATA_BYTES.hex()
+QUOTE_VERIFIER_TIMEOUT_SECONDS = float(os.environ.get("QUOTE_VERIFIER_TIMEOUT_SECONDS", "30"))
 
 EXPERIMENT_COUNTER = 0
 COUNTER_LOCK = threading.Lock()
@@ -120,12 +135,38 @@ def run_generate_dc() -> subprocess.CompletedProcess:
             missing.append(str(GO_DC_SOURCE))
         raise FileNotFoundError(f"Nessun generatore DC disponibile: {', '.join(missing)}")
 
-    return subprocess.run(
+    print(f"[SERVER] generate cmd: {' '.join(cmd)}")
+    t_gen_start = now_ns()
+    result = subprocess.run(
         cmd,
         cwd=CERTS_DIR,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
         text=False,
+    )
+    print(f"[SERVER] generate subprocess ms={(now_ns() - t_gen_start) / 1_000_000:.3f}")
+    return result
+
+
+def run_quote_verification(quote_bytes: bytes) -> subprocess.CompletedProcess:
+    if not QUOTE_VERIFIER_APP.exists():
+        raise FileNotFoundError(f"Quote verifier not found: {QUOTE_VERIFIER_APP}")
+
+    cmd = [
+        str(QUOTE_VERIFIER_APP),
+        "-quote-stdin",
+        "-report-data-hex",
+        QUOTE_REPORTDATA_HEX,
+    ]
+    print(f"[SERVER] Running quote verifier: {' '.join(cmd)}")
+    return subprocess.run(
+        cmd,
+        input=quote_bytes,
+        cwd=QUOTE_VERIFIER_APP.parent,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=False,
+        timeout=QUOTE_VERIFIER_TIMEOUT_SECONDS,
     )
 
 
@@ -174,6 +215,36 @@ def handle_certs():
     print(f"[SERVER] SNI requested: {sni}")
     if not sni:
         return json.dumps({"error": "missing sni"}), 400
+    attestation_quote = data.get("quote")
+    quote_bytes = None
+    if attestation_quote:
+        try:
+            quote_bytes = base64.b64decode(attestation_quote, validate=True)
+            print(f"[SERVER] Attestation quote received ({len(quote_bytes)} bytes)")
+        except (binascii.Error, ValueError, TypeError):
+            print(f"[SERVER] Attestation quote: {attestation_quote}")
+            return json.dumps({"error": "invalid attestation quote"}), 400
+
+        try:
+            verify_result = run_quote_verification(quote_bytes)
+        except FileNotFoundError as exc:
+            print(f"[SERVER] Quote verifier unavailable: {exc}")
+            return json.dumps({"error": "quote verifier unavailable"}), 500
+        except subprocess.TimeoutExpired:
+            print("[SERVER] Quote verification timed out")
+            return json.dumps({"error": "quote verification timed out"}), 500
+
+        verifier_output = (verify_result.stdout or b"").decode(errors="replace").strip()
+        print(f"[SERVER] Quote verifier exit code: {verify_result.returncode}")
+        print("[SERVER] Quote verifier output BEGIN")
+        print(verifier_output if verifier_output else "(no output)")
+        print("[SERVER] Quote verifier output END")
+        if verify_result.returncode != 0:
+            print(f"[SERVER] Quote verification failed with exit code {verify_result.returncode}")
+            return json.dumps({"error": "quote verification failed"}), 403
+        print("[SERVER] Quote verification succeeded")
+    else:
+        print("[SERVER] No attestation quote included; skipping quote verification")
 
     # make sure we have a base certificate and key
     if not (os.path.exists(CERT_PEM) and os.path.exists(KEY_PEM)):
@@ -313,7 +384,7 @@ if __name__ == "__main__":
     if os.path.exists(CERT_PEM) and os.path.exists(KEY_PEM):
         load_static_cert_b64()
 
-    threading.Thread(target=run_app_server, daemon=True).start()
-
-    print("[SERVER] cert service listening on :5000")
-    app.run(host="0.0.0.0", port=5000)
+    # threading.Thread(target=run_app_server, daemon=True).start()
+    run_app_server()
+    # print("[SERVER] cert service listening on :5000")
+    # app.run(host="0.0.0.0", port=5000)

@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -14,17 +15,24 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
+
+	benchtrace "dc/middlebox/internal/trace"
 )
 
 const (
-	gatewayListenAddr     = ":9443"
-	operatorTLSPort       = "8443"
-	operatorReadinessPort = "18080"
+	gatewayListenAddr           = ":9443"
+	operatorTLSPort             = "8443"
+	operatorReadinessPort       = "18080"
+	defaultClientQueueSize      = 100
+	defaultClientQueueTimeoutMs = 5000
+	defaultClientQueueRetryMs   = 1
 )
 
 type gatewayState struct {
@@ -44,11 +52,24 @@ type backendPool struct {
 	lastGood string
 	leased   map[string]struct{}
 	k8s      *kubernetesBackend
+	docker   *dockerBackend
 }
 
 type backendTarget struct {
 	name string
 	ip   string
+}
+
+type clientQueueConfig struct {
+	size    int
+	timeout time.Duration
+	retry   time.Duration
+}
+
+type queuedClient struct {
+	id       string
+	conn     net.Conn
+	deadline time.Time
 }
 
 type kubernetesBackend struct {
@@ -117,6 +138,42 @@ func getEnvBool(key string, fallback bool) bool {
 	default:
 		return fallback
 	}
+}
+
+func newClientQueueConfigFromEnv(noReadyWaitSeconds int, noReadyRetryMs int) clientQueueConfig {
+	size := getEnvInt("GATEWAY_CLIENT_QUEUE_SIZE", defaultClientQueueSize)
+	if size < 0 {
+		size = 0
+	}
+
+	timeoutFallback := time.Duration(defaultClientQueueTimeoutMs) * time.Millisecond
+	if noReadyWaitSeconds > 0 {
+		timeoutFallback = time.Duration(noReadyWaitSeconds) * time.Second
+	}
+	timeout := envDurationMsAllowZero("GATEWAY_CLIENT_QUEUE_TIMEOUT_MS", timeoutFallback)
+
+	retryFallback := time.Duration(defaultClientQueueRetryMs) * time.Millisecond
+	if retryFallback <= 0 {
+		retryFallback = time.Duration(defaultClientQueueRetryMs) * time.Millisecond
+	}
+	retry := envDurationMsAllowZero("GATEWAY_CLIENT_QUEUE_RETRY_MS", retryFallback)
+	if retry <= 0 {
+		retry = time.Millisecond
+	}
+
+	return clientQueueConfig{size: size, timeout: timeout, retry: retry}
+}
+
+func envDurationMsAllowZero(key string, fallback time.Duration) time.Duration {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	ms, err := strconv.Atoi(raw)
+	if err != nil || ms < 0 {
+		return fallback
+	}
+	return time.Duration(ms) * time.Millisecond
 }
 
 func newKubernetesBackendFromEnv() (*kubernetesBackend, error) {
@@ -287,6 +344,9 @@ func copyWithOrder(ips []string, policy string) []string {
 }
 
 func (p *backendPool) pickReadyBackend() (backendTarget, error) {
+	if p.docker != nil {
+		return p.docker.pickReadyBackend()
+	}
 	if p.k8s != nil {
 		return p.pickReadyKubernetesBackend()
 	}
@@ -388,9 +448,192 @@ func (p *backendPool) releaseLease(name string) {
 	if name == "" {
 		return
 	}
+	if p.docker != nil {
+		p.docker.releaseBackend(name)
+		return
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	delete(p.leased, name)
+}
+
+func (p *backendPool) finishBackend(backend backendTarget, failed bool) {
+	if backend.name == "" {
+		return
+	}
+	if p.docker != nil {
+		p.docker.finishBackend(backend.name, failed)
+		return
+	}
+
+	p.releaseLease(backend.name)
+	if p.k8s != nil && p.k8s.deleteAfterUse {
+		if err := p.k8s.deleteBackend(backend.name); err != nil {
+			info("[GATEWAY] delete backend failed: " + err.Error())
+		} else {
+			info("[GATEWAY] deleted backend pod " + backend.name)
+		}
+	}
+}
+
+func pickBackendWithPolicy(pool *backendPool, policy string, waitSeconds int, retryMs int) (backendTarget, error) {
+	backend, err := pool.pickReadyBackend()
+	if err == nil || policy != "wait" || waitSeconds <= 0 {
+		return backend, err
+	}
+
+	deadline := time.Now().Add(time.Duration(waitSeconds) * time.Second)
+	for time.Now().Before(deadline) {
+		backend, err = pool.pickReadyBackend()
+		if err == nil {
+			return backend, nil
+		}
+		time.Sleep(time.Duration(retryMs) * time.Millisecond)
+	}
+	return backendTarget{}, err
+}
+
+func pickBackendUntil(ctx context.Context, pool *backendPool, deadline time.Time, retry time.Duration) (backendTarget, error) {
+	var lastErr error
+	for {
+		if ctx.Err() != nil {
+			return backendTarget{}, ctx.Err()
+		}
+
+		backend, err := pool.pickReadyBackend()
+		if err == nil {
+			return backend, nil
+		}
+		lastErr = err
+
+		wait := retry
+		if !deadline.IsZero() {
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				return backendTarget{}, lastErr
+			}
+			if remaining < wait {
+				wait = remaining
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return backendTarget{}, ctx.Err()
+		case <-time.After(wait):
+		}
+	}
+}
+
+func handleClientConn(connID string, c net.Conn, pool *backendPool, st *gatewayState, noReadyPolicy string, noReadyWaitSeconds int, noReadyRetryMs int) {
+	info(fmt.Sprintf("t26: [GATEWAY] - operator_selection_start = %d ns", time.Now().UnixNano()))
+	benchtrace.Mark(benchtrace.GatewayWorkerSelectStart, connID, 0)
+	backend, err := pickBackendWithPolicy(pool, noReadyPolicy, noReadyWaitSeconds, noReadyRetryMs)
+	if err != nil {
+		_ = c.Close()
+		st.dropped.Add(1)
+		st.lastResolution.Store(err.Error())
+		benchtrace.Mark(benchtrace.GatewayRequestDropped, connID, 1)
+		logClientDrop(err.Error(), pool, nil)
+		return
+	}
+	benchtrace.Mark(benchtrace.GatewayWorkerSelectDone, connID, 0)
+
+	serveClientWithBackend(connID, c, pool, st, backend)
+}
+
+func serveClientWithBackend(connID string, c net.Conn, pool *backendPool, st *gatewayState, backend backendTarget) {
+	defer c.Close()
+
+	st.lastBackend.Store(backend.name)
+	st.lastResolution.Store("ok")
+	info(fmt.Sprintf("t27: [GATEWAY] - operator_selected = %d ns", time.Now().UnixNano()))
+
+	backendAddr := net.JoinHostPort(backend.ip, operatorTLSPort)
+	benchtrace.Mark(benchtrace.GatewayBackendDialStart, connID, 0)
+	backendConn, dialErr := net.DialTimeout("tcp", backendAddr, 2*time.Second)
+	if dialErr != nil {
+		pool.finishBackend(backend, true)
+		st.dropped.Add(1)
+		st.lastResolution.Store(dialErr.Error())
+		benchtrace.Mark(benchtrace.GatewayBackendDialDone, connID, 1)
+		benchtrace.Mark(benchtrace.GatewayRequestDropped, connID, 2)
+		logClientDrop("backend dial failed: "+dialErr.Error(), pool, nil)
+		return
+	}
+	benchtrace.Mark(benchtrace.GatewayBackendDialDone, connID, 0)
+	defer backendConn.Close()
+	defer func() {
+		pool.finishBackend(backend, false)
+	}()
+
+	st.forwarded.Add(1)
+	info(fmt.Sprintf("t28: [GATEWAY] - gateway_to_operator_send = %d ns", time.Now().UnixNano()))
+	benchtrace.Mark(benchtrace.GatewaySpliceStart, connID, 0)
+	splice(c, backendConn)
+	benchtrace.Mark(benchtrace.GatewaySpliceDone, connID, 0)
+}
+
+func logContainerStatus(event string, pool *backendPool, queue <-chan queuedClient) {
+	if pool == nil || pool.docker == nil {
+		return
+	}
+
+	queueLen := -1
+	queueCap := -1
+	if queue != nil {
+		queueLen = len(queue)
+		queueCap = cap(queue)
+	}
+	info("[GATEWAY] " + event + " " + pool.docker.statusString(queueLen, queueCap))
+}
+
+func logClientDrop(reason string, pool *backendPool, queue <-chan queuedClient) {
+	if pool == nil || pool.docker == nil {
+		info("[GATEWAY] request_dropped reason=" + strconv.Quote(reason))
+		return
+	}
+	logContainerStatus("request_dropped reason="+strconv.Quote(reason), pool, queue)
+}
+
+func runClientQueue(ctx context.Context, queue <-chan queuedClient, cfg clientQueueConfig, pool *backendPool, st *gatewayState) {
+	for {
+		var client queuedClient
+		select {
+		case <-ctx.Done():
+			drainClientQueue(queue)
+			return
+		case client = <-queue:
+		}
+
+		info(fmt.Sprintf("t26: [GATEWAY] - operator_selection_start = %d ns", time.Now().UnixNano()))
+		benchtrace.Mark(benchtrace.GatewayQueueLeave, client.id, uint64(len(queue)))
+		benchtrace.Mark(benchtrace.GatewayWorkerSelectStart, client.id, 0)
+		backend, err := pickBackendUntil(ctx, pool, client.deadline, cfg.retry)
+		if err != nil {
+			_ = client.conn.Close()
+			st.dropped.Add(1)
+			st.lastResolution.Store("client queue timeout: " + err.Error())
+			benchtrace.Mark(benchtrace.GatewayQueueTimeout, client.id, 0)
+			benchtrace.Mark(benchtrace.GatewayRequestDropped, client.id, 3)
+			logClientDrop("client queue timeout: "+err.Error(), pool, queue)
+			continue
+		}
+		benchtrace.Mark(benchtrace.GatewayWorkerSelectDone, client.id, 0)
+
+		go serveClientWithBackend(client.id, client.conn, pool, st, backend)
+	}
+}
+
+func drainClientQueue(queue <-chan queuedClient) {
+	for {
+		select {
+		case client := <-queue:
+			_ = client.conn.Close()
+			benchtrace.Mark(benchtrace.GatewayRequestDropped, client.id, 4)
+		default:
+			return
+		}
+	}
 }
 
 func splice(a net.Conn, b net.Conn) {
@@ -435,6 +678,20 @@ func startHealthServer(st *gatewayState) {
 }
 
 func main() {
+	tracePathFlag := flag.String("trace", "", "trace output file; requires build tag trace")
+	traceBufferFlag := flag.Int("trace-buffer-events", 100000, "trace buffer capacity in events")
+	traceDropFlag := flag.Bool("trace-drop-on-full", true, "drop trace events instead of blocking when trace buffer is full")
+	flag.Parse()
+
+	if err := benchtrace.Start(*tracePathFlag, *traceBufferFlag, *traceDropFlag); err != nil {
+		log.Fatalf("trace start: %v", err)
+	}
+	defer benchtrace.Stop()
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	backendMode := strings.ToLower(getEnv("GATEWAY_BACKEND_MODE", "auto"))
 	taskHost := getEnv("OPERATOR_TASKS_HOST", "tasks.tlmsp_mb_operator_warm")
 	noReadyPolicy := strings.ToLower(getEnv("NO_READY_OPERATOR_POLICY", "drop"))
 	noReadyWaitSeconds := getEnvInt("NO_READY_OPERATOR_WAIT_SECONDS", 0)
@@ -442,14 +699,42 @@ func main() {
 	if noReadyRetryMs <= 0 {
 		noReadyRetryMs = 50
 	}
+	clientQueueCfg := newClientQueueConfigFromEnv(noReadyWaitSeconds, noReadyRetryMs)
 	selectionPolicy := strings.ToLower(getEnv("OPERATOR_SELECTION_POLICY", "first"))
 	if selectionPolicy != "first" && selectionPolicy != "last" && selectionPolicy != "random" {
 		selectionPolicy = "first"
 	}
 
-	k8sBackend, err := newKubernetesBackendFromEnv()
-	if err != nil {
-		log.Fatal(err)
+	var k8sBackend *kubernetesBackend
+	var dockerBackend *dockerBackend
+	switch backendMode {
+	case "auto":
+		var err error
+		k8sBackend, err = newKubernetesBackendFromEnv()
+		if err != nil {
+			log.Fatal(err)
+		}
+	case "kubernetes", "k8s":
+		var err error
+		k8sBackend, err = newKubernetesBackendFromEnv()
+		if err != nil {
+			log.Fatal(err)
+		}
+		if k8sBackend == nil {
+			log.Fatal("GATEWAY_BACKEND_MODE=kubernetes requires KUBERNETES_BACKEND_LABEL_SELECTOR")
+		}
+	case "docker":
+		var err error
+		dockerBackend, err = newDockerBackendFromEnv()
+		if err != nil {
+			log.Fatal(err)
+		}
+		if err := dockerBackend.start(ctx); err != nil {
+			log.Fatal(err)
+		}
+	case "swarm", "dns":
+	default:
+		log.Fatalf("unsupported GATEWAY_BACKEND_MODE %q; use auto, docker, kubernetes, swarm, or dns", backendMode)
 	}
 
 	st := &gatewayState{startedAt: time.Now()}
@@ -463,83 +748,82 @@ func main() {
 		policy:   selectionPolicy,
 		leased:   make(map[string]struct{}),
 		k8s:      k8sBackend,
+		docker:   dockerBackend,
 	}
+
+	var clientQueue chan queuedClient
+	if clientQueueCfg.size > 0 {
+		clientQueue = make(chan queuedClient, clientQueueCfg.size)
+		go runClientQueue(ctx, clientQueue, clientQueueCfg, pool, st)
+	}
+	var gatewayConnCounter atomic.Int64
 
 	ln, err := net.Listen("tcp", gatewayListenAddr)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer ln.Close()
+	go func() {
+		<-ctx.Done()
+		_ = ln.Close()
+	}()
+	if dockerBackend != nil {
+		defer func() {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			dockerBackend.shutdown(cleanupCtx)
+		}()
+	}
 
-	if k8sBackend != nil {
+	if dockerBackend != nil {
+		info("[GATEWAY] listening on " + gatewayListenAddr + " using docker backend image=" + dockerBackend.image + " network=" + dockerBackend.networkName + " min_ready=" + strconv.Itoa(dockerBackend.minReady) + " scale_up_by=" + strconv.Itoa(dockerBackend.scaleUpBy))
+	} else if k8sBackend != nil {
 		info("[GATEWAY] listening on " + gatewayListenAddr + " using kubernetes backend selector=" + k8sBackend.labelSelector + " selection_policy=" + selectionPolicy + " api_timeout=" + k8sBackend.apiTimeout.String())
 	} else {
 		info("[GATEWAY] listening on " + gatewayListenAddr + " using task host " + taskHost + " selection_policy=" + selectionPolicy)
 	}
+	if clientQueue != nil {
+		info("[GATEWAY] client queue enabled size=" + strconv.Itoa(clientQueueCfg.size) + " timeout=" + clientQueueCfg.timeout.String() + " retry=" + clientQueueCfg.retry.String())
+	}
+	fmt.Fprintf(os.Stderr, "[GATEWAY_READY] listening=%s mode=%s\n", gatewayListenAddr, backendMode)
 
 	for {
 		clientConn, err := ln.Accept()
 		if err != nil {
+			if ctx.Err() != nil {
+				info("[GATEWAY] shutting down")
+				return
+			}
 			log.Printf("accept failed: %v", err)
 			continue
 		}
 
 		st.accepted.Add(1)
-		go func(c net.Conn) {
-			defer c.Close()
-			info(fmt.Sprintf("t25: [GATEWAY] - client_to_gateway_received = %d ns", time.Now().UnixNano()))
+		connID := fmt.Sprintf("gateway-conn-%d", gatewayConnCounter.Add(1))
+		benchtrace.Mark(benchtrace.GatewayClientAccepted, connID, uint64(st.accepted.Load()))
+		info(fmt.Sprintf("t25: [GATEWAY] - client_to_gateway_received = %d ns", time.Now().UnixNano()))
+		logContainerStatus("request_received", pool, clientQueue)
 
-			info(fmt.Sprintf("t26: [GATEWAY] - operator_selection_start = %d ns", time.Now().UnixNano()))
-			backend, err := pool.pickReadyBackend()
-			if err != nil && noReadyPolicy == "wait" && noReadyWaitSeconds > 0 {
-				deadline := time.Now().Add(time.Duration(noReadyWaitSeconds) * time.Second)
-				for time.Now().Before(deadline) {
-					backend, err = pool.pickReadyBackend()
-					if err == nil {
-						break
-					}
-					time.Sleep(time.Duration(noReadyRetryMs) * time.Millisecond)
-				}
+		if clientQueue != nil {
+			deadline := time.Time{}
+			if clientQueueCfg.timeout > 0 {
+				deadline = time.Now().Add(clientQueueCfg.timeout)
 			}
 
-			if err != nil {
+			select {
+			case clientQueue <- queuedClient{id: connID, conn: clientConn, deadline: deadline}:
+				benchtrace.Mark(benchtrace.GatewayQueueEnter, connID, uint64(len(clientQueue)))
+			default:
+				_ = clientConn.Close()
 				st.dropped.Add(1)
-				st.lastResolution.Store(err.Error())
-				return
+				st.lastResolution.Store("client queue full")
+				benchtrace.Mark(benchtrace.GatewayQueueFull, connID, uint64(cap(clientQueue)))
+				benchtrace.Mark(benchtrace.GatewayRequestDropped, connID, 5)
+				logClientDrop("client queue full", pool, clientQueue)
 			}
+			continue
+		}
 
-			st.lastBackend.Store(backend.name)
-			st.lastResolution.Store("ok")
-			info(fmt.Sprintf("t27: [GATEWAY] - operator_selected = %d ns", time.Now().UnixNano()))
-
-			backendAddr := net.JoinHostPort(backend.ip, operatorTLSPort)
-			backendConn, dialErr := net.DialTimeout("tcp", backendAddr, 2*time.Second)
-			if dialErr != nil {
-				pool.releaseLease(backend.name)
-				st.dropped.Add(1)
-				st.lastResolution.Store(dialErr.Error())
-				if pool.k8s != nil && pool.k8s.deleteAfterUse {
-					if err := pool.k8s.deleteBackend(backend.name); err != nil {
-						info("[GATEWAY] delete backend after dial failure: " + err.Error())
-					}
-				}
-				return
-			}
-			defer backendConn.Close()
-			defer func() {
-				pool.releaseLease(backend.name)
-				if pool.k8s != nil && pool.k8s.deleteAfterUse {
-					if err := pool.k8s.deleteBackend(backend.name); err != nil {
-						info("[GATEWAY] delete backend failed: " + err.Error())
-					} else {
-						info("[GATEWAY] deleted backend pod " + backend.name)
-					}
-				}
-			}()
-
-			st.forwarded.Add(1)
-			info(fmt.Sprintf("t28: [GATEWAY] - gateway_to_operator_send = %d ns", time.Now().UnixNano()))
-			splice(c, backendConn)
-		}(clientConn)
+		go handleClientConn(connID, clientConn, pool, st, noReadyPolicy, noReadyWaitSeconds, noReadyRetryMs)
 	}
 }

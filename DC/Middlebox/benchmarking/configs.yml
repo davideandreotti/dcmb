@@ -1,0 +1,67 @@
+campaign:
+  name: latency_1
+  output_root: experiments
+  runs: 1
+  duration_s: 30
+  warmup_s: 1
+  cooldown_s: 2
+  readiness_timeout_s: 30
+  cpu_interval_s: 0.2
+  trace_buffer_events: 100000
+  trace_drop_on_full: true
+
+hosts:
+  client:
+    host: localhost
+    ip: 127.0.0.1
+    work_dir: /home/bonsai/dcmb/DC/Middlebox
+  middlebox:
+    host: localhost
+    ip: 127.0.0.1
+    work_dir: /home/bonsai/dcmb/DC/Middlebox
+  server:
+    host: localhost
+    ip: 10.79.1.175
+    work_dir: /home/bonsai/dcmb
+
+paths:
+  middlebox_dir: /home/bonsai/dcmb/DC/Middlebox
+  server_app_script: /home/bonsai/dcmb/PerformanceMeasuring/certs_server.py
+
+server:
+  target_url: https://10.79.1.175:8000
+  cert_url: http://10.79.1.175:5000
+  request_path: /function/init
+  certserver_command: ["./certserver"]
+  appserver_command: ["python3", "-u", "/home/bonsai/dcmb/PerformanceMeasuring/certs_server.py"]
+
+client:
+  binary: ./client
+  method: GET
+  servername: server
+  headers:
+    - "Authorization: Bearer token"
+  max_in_flight: 64
+
+client_matrix:
+  modes: [fresh, persistent]
+  clients: [1]
+  rates: [10]
+
+deployments:
+  - name: baremetal
+    kind: baremetal
+    command: ["./middlebox", "-log_level", "debug", "-minimal_logs=false", "-reuse_dc=false"]
+
+  - name: docker_gateway
+    kind: docker_gateway
+    # runtime: docker
+    # image: dcmb_gateway:docker
+    # container_name: dcmb_gateway
+    # network: dcmb-middlebox-net
+    # worker_name_prefix: dcmb-worker
+    min_ready: 10
+    scale_up_by: 10
+    container_stats_scope: all
+    # worker_trace_enabled: true
+    # docker_api_timeout_ms: 5000

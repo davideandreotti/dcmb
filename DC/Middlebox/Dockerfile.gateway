@@ -1,53 +1,25 @@
-FROM ubuntu:22.04
+FROM debian:bookworm-slim
 
-# Installa tool necessari
-RUN apt-get update && apt-get install -y \
-    bash git curl tar build-essential ca-certificates iputils-ping python3 python3-pip docker.io
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /root
-
-# Scarica una versione bootstrap di Go (serve per compilare cfgo)
-RUN curl -L https://go.dev/dl/go1.21.1.linux-amd64.tar.gz -o /tmp/go-bootstrap.tar.gz \
-    && tar -C /usr/local -xzf /tmp/go-bootstrap.tar.gz
-
-ENV PATH=$PATH:/usr/local/go/bin
-
-ENV GOROOT_BOOTSTRAP=/usr/local/go
-
-# Copia la Go modificata del professore dal repository
-COPY DC/go /root/go
-
-WORKDIR /root/go/src
-RUN ./make.bash
-
-# Aggiorna il PATH per usare cfgo
-ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/root/go/bin
-
-RUN python3 -m pip install --user requests
-
-# Copia il codice del gateway
 WORKDIR /app
-COPY DC/Middlebox/middlebox_gateway.go .
-COPY DC/Middlebox/go.mod .
-COPY DC/Middlebox/go.sum .
 
-# Il gateway non usa middleboxHandler.go né messageTypes.go (nessuna validazione OIDC)
-# Compila il gateway — file singolo, nessuna dipendenza esterna oltre a stdlib
-RUN /root/go/bin/go mod tidy && GOOS=linux GOARCH=amd64 /root/go/bin/go build -o gateway middlebox_gateway.go
+COPY DC/Middlebox/middlebox_gateway /app/gateway
+RUN chmod +x /app/gateway
 
-# Variabili d'ambiente di default (sovrascrivibili al run/deploy)
-ENV OPERATOR_MODE=warm
-ENV OPERATOR_SERVICE_NAME=mb_operator
+ENV GATEWAY_BACKEND_MODE=docker
+ENV DOCKER_SOCKET=/var/run/docker.sock
+ENV DOCKER_WORKER_IMAGE=dcmiddlebox-worker:baseline
+ENV DOCKER_WORKER_NETWORK=dcmb-middlebox-net
+ENV DOCKER_MIN_READY_OPERATORS=1
+ENV DOCKER_SCALE_UP_BY=1
+ENV GATEWAY_CLIENT_QUEUE_SIZE=100
+ENV GATEWAY_CLIENT_QUEUE_TIMEOUT_MS=500
+ENV GATEWAY_CLIENT_QUEUE_RETRY_MS=1
 
-# NOTE DOCKER SWARM:
-#   Il gateway deve girare sul manager node e avere accesso al Docker socket
-#   per poter eseguire "docker service scale" nel caso cold.
-#   Nel docker-stack.yml aggiungere:
-#     volumes:
-#       - /var/run/docker.sock:/var/run/docker.sock
-#   e il constraint:
-#     placement:
-#       constraints: [node.role == manager]
+EXPOSE 9443
+EXPOSE 8088
 
-# Comando di avvio
-# CMD ["./gateway"]
+ENTRYPOINT ["/app/gateway"]
