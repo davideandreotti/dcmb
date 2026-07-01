@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -36,9 +37,10 @@ const (
 	AllowTestingHeader    = true // After executing code check, accept even if code is invalid
 	UseDummyTokenFallback = true // In test setups without real JWT, fallback to dummy token validation
 	JWKSCacheFile         = "jwks.dat"
+	SessionTTL            = 2 * time.Second
+	SessionCleanupEvery   = 1000
 )
 
-var mutex sync.Mutex
 var ctx = context.Background()
 var verifier *oidc.IDTokenVerifier
 
@@ -69,6 +71,12 @@ type Session struct {
 	Codes    map[*MessageType]Code
 }
 
+type sessionEntry struct {
+	mu       sync.Mutex
+	session  Session
+	lastSeen time.Time
+}
+
 /*
 var states = []State{
 	{[]Transition{{1, &initMessageType}}},
@@ -95,7 +103,44 @@ var states = []State{
 	{[]Transition{{0, &initMessageType}}},
 }
 
-var session = make(map[string]Session)
+var sessions sync.Map
+var sessionCleanupCounter atomic.Uint64
+
+func newSession() Session {
+	return Session{Messages: []Message{}, State: 0, Codes: map[*MessageType]Code{}}
+}
+
+func sessionKeyForRequest(headers http.Header, user string) string {
+	if clientID := strings.TrimSpace(headers.Get("X-Client-ID")); clientID != "" {
+		return clientID
+	}
+	if user != "" && user != "Unknown" {
+		return user
+	}
+	return "unknown"
+}
+
+func getSessionEntry(key string, now time.Time) *sessionEntry {
+	value, _ := sessions.LoadOrStore(key, &sessionEntry{session: newSession(), lastSeen: now})
+	return value.(*sessionEntry)
+}
+
+func cleanupExpiredSessions(now time.Time) {
+	if sessionCleanupCounter.Add(1)%SessionCleanupEvery != 0 {
+		return
+	}
+
+	sessions.Range(func(key any, value any) bool {
+		entry := value.(*sessionEntry)
+		entry.mu.Lock()
+		expired := now.Sub(entry.lastSeen) > SessionTTL
+		if expired {
+			sessions.Delete(key)
+		}
+		entry.mu.Unlock()
+		return true
+	})
+}
 
 func generateCode() string {
 	h := fnv.New64a()
@@ -125,6 +170,9 @@ func validateTestingToken(tokenString string) (map[string]any, error) {
 }
 
 func processRequest(inputData *http.Request) (bool, string, *MessageType) {
+	now := time.Now()
+	cleanupExpiredSessions(now)
+
 	//read body without consuming it
 	body := []byte{}
 	if inputData.Body != nil {
@@ -169,11 +217,13 @@ func processRequest(inputData *http.Request) (bool, string, *MessageType) {
 	}
 
 	messageType := (*MessageType)(nil)
+	sessionKey := sessionKeyForRequest(headers, user)
+	entry := getSessionEntry(sessionKey, now)
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+	entry.lastSeen = now
 
-	userSessionTmp, ok := session[user]
-	if !ok {
-		userSessionTmp = Session{Messages: []Message{}, State: 0, Codes: map[*MessageType]Code{}}
-	}
+	userSessionTmp := entry.session
 
 	for n, code := range userSessionTmp.Codes {
 		if code.Expiration.Before(time.Now()) {
@@ -208,13 +258,16 @@ func processRequest(inputData *http.Request) (bool, string, *MessageType) {
 	if messageType == nil {
 		info("\033[1;31mNo match\033[0m")
 	} else {
-		session[user] = userSessionTmp
+		entry.session = userSessionTmp
 	}
-	return valid, user, messageType
+	return valid, sessionKey, messageType
 }
 
 func processResponse(inputData *http.Response, user string, messageType any) {
-	messageType = messageType.(*MessageType)
+	mt, ok := messageType.(*MessageType)
+	if !ok || mt == nil {
+		return
+	}
 	//read body without consuming it
 	body := []byte{}
 	if inputData.Body != nil {
@@ -226,7 +279,12 @@ func processResponse(inputData *http.Response, user string, messageType any) {
 
 	info("responseCode: " + strconv.Itoa(responseCode))
 
-	userSessionTmp, _ := session[user]
+	now := time.Now()
+	entry := getSessionEntry(user, now)
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+	entry.lastSeen = now
+	userSessionTmp := entry.session
 
 	if responseCode == 200 {
 		userSessionTmp.State = states[userSessionTmp.State].Transitions[0].ToState
@@ -239,7 +297,7 @@ func processResponse(inputData *http.Response, user string, messageType any) {
 			headers.Add("X-Code-"+fmt.Sprintf("%x", md5.Sum([]byte(k.Uri))), v.Code)
 		}
 	}
-	session[user] = userSessionTmp
+	entry.session = userSessionTmp
 }
 
 type oidc_providerJSON struct {

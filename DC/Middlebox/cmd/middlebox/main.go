@@ -60,6 +60,12 @@ type delegationMaterial struct {
 }
 
 type traceIDContextKey struct{}
+type validationResultContextKey struct{}
+
+type validationResult struct {
+	user        string
+	messageType any
+}
 
 type operatorState struct {
 	id               string
@@ -602,6 +608,23 @@ func main() {
 		http.Error(w, "bad gateway", http.StatusBadGateway)
 	}
 
+	proxy.ModifyResponse = func(resp *http.Response) error {
+		traceID := resp.Request.Header.Get("X-Trace-ID")
+		if traceID == "" {
+			traceID = st.id
+		}
+
+		result, ok := resp.Request.Context().Value(validationResultContextKey{}).(validationResult)
+		if !ok {
+			return nil
+		}
+
+		benchtrace.Mark(benchtrace.MiddleboxResponseValidationStart, traceID, 0)
+		processResponse(resp, result.user, result.messageType)
+		benchtrace.Mark(benchtrace.MiddleboxResponseValidationDone, traceID, 0)
+		return nil
+	}
+
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		traceID := r.Header.Get("X-Trace-ID")
 		if traceID == "" {
@@ -609,6 +632,13 @@ func main() {
 		}
 		benchtrace.Mark(benchtrace.MiddleboxRequestStart, traceID, 0)
 		benchtrace.Mark(benchtrace.MiddleboxValidationStart, traceID, 0)
+		valid, user, messageType := processRequest(r)
+		if !valid {
+			benchtrace.Mark(benchtrace.MiddleboxValidationDone, traceID, 1)
+			benchtrace.Mark(benchtrace.MiddleboxRequestDone, traceID, 1)
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
 		benchtrace.Mark(benchtrace.MiddleboxValidationDone, traceID, 0)
 		// if st.consumed.Load() {
 		// 	http.Error(w, "operator consumed", http.StatusServiceUnavailable)
@@ -636,6 +666,10 @@ func main() {
 		}
 
 		r = r.WithContext(context.WithValue(r.Context(), traceIDContextKey{}, traceID))
+		r = r.WithContext(context.WithValue(r.Context(), validationResultContextKey{}, validationResult{
+			user:        user,
+			messageType: messageType,
+		}))
 		proxy.ServeHTTP(w, r)
 		benchtrace.Mark(benchtrace.MiddleboxRequestDone, traceID, 0)
 

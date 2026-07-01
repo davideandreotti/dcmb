@@ -31,6 +31,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 COPY DC/Middlebox/middlebox /app/middlebox
+COPY DC/Middlebox/schemas /app/schemas
 RUN chmod +x /app/middlebox
 
 # Preserve the path expected by the current binary.

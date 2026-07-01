@@ -15,7 +15,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 try:
@@ -469,6 +469,14 @@ class Deployment:
 
 
 class BaremetalDeployment(Deployment):
+    def env(self) -> dict[str, str]:
+        env = {
+            "OPERATOR_TARGET": self.controller.server_target_url,
+            "OPERATOR_CERT_URL": self.controller.server_cert_url,
+        }
+        env.update({str(k): str(v) for k, v in self.cfg.get("env", {}).items()})
+        return env
+
     def start(self) -> ManagedProcess:
         command = list(self.cfg.get("command", ["./middlebox", "-log_level", "debug", "-minimal_logs=false"]))
         command.extend(
@@ -480,15 +488,11 @@ class BaremetalDeployment(Deployment):
                 f"-trace-drop-on-full={str(self.controller.trace_drop_on_full).lower()}",
             ]
         )
-        env = {
-            "OPERATOR_TARGET": self.controller.server_target_url,
-            "OPERATOR_CERT_URL": self.controller.server_cert_url,
-        }
         self.proc = self.controller.spawn(
             role="middlebox",
             cmd=command,
             cwd=self.controller.middlebox_dir,
-            env=env,
+            env=self.env(),
             ready_patterns=["[OPERATOR_READY]"],
         )
         return self.proc
@@ -496,6 +500,43 @@ class BaremetalDeployment(Deployment):
     def client_url(self) -> str:
         host = self.controller.hosts["middlebox"].get("ip", "127.0.0.1")
         return f"https://{host}:8443{self.controller.request_path}"
+
+
+class GramineSGXDeployment(BaremetalDeployment):
+    def enclave_trace_path(self) -> str:
+        trace_file = (self.run.traces_dir / "middlebox.bin").resolve()
+        try:
+            rel = trace_file.relative_to(self.controller.output_root.resolve())
+        except ValueError as exc:
+            raise RuntimeError(
+                "SGX trace path must live under the configured output_root mounted at /trace"
+            ) from exc
+        return str(PurePosixPath("/trace") / PurePosixPath(rel.as_posix()))
+
+    def start(self) -> ManagedProcess:
+        command = list(
+            self.cfg.get(
+                "command",
+                ["gramine-sgx", "middlebox", "-log_level", "debug", "-minimal_logs=false"],
+            )
+        )
+        command.extend(
+            [
+                "-trace",
+                self.enclave_trace_path(),
+                "-trace-buffer-events",
+                str(self.controller.trace_buffer_events),
+                f"-trace-drop-on-full={str(self.controller.trace_drop_on_full).lower()}",
+            ]
+        )
+        self.proc = self.controller.spawn(
+            role="middlebox",
+            cmd=command,
+            cwd=self.controller.middlebox_dir,
+            env=self.env(),
+            ready_patterns=["[OPERATOR_READY]"],
+        )
+        return self.proc
 
 
 class DockerGatewayDeployment(Deployment):
@@ -834,6 +875,8 @@ class Controller:
         kind = str(cfg.get("kind"))
         if kind == "baremetal":
             return BaremetalDeployment(cfg, self, run_ctx)
+        if kind == "gramine_sgx":
+            return GramineSGXDeployment(cfg, self, run_ctx)
         if kind == "docker_gateway":
             return DockerGatewayDeployment(cfg, self, run_ctx)
         raise NotImplementedError(f"deployment kind {kind!r} is not in the first implementation scope")
@@ -865,6 +908,15 @@ class Controller:
     def start_certserver(self, run_ctx: RunContext) -> ManagedProcess:
         self._current_run = run_ctx
         command = list(self.server_cfg.get("certserver_command", ["./certserver"]))
+        command.extend(
+            [
+                "-trace",
+                str(run_ctx.traces_dir / "certserver.bin"),
+                "-trace-buffer-events",
+                str(self.trace_buffer_events),
+                f"-trace-drop-on-full={str(self.trace_drop_on_full).lower()}",
+            ]
+        )
         return self.spawn(
             role="certserver",
             cmd=command,
@@ -914,6 +966,11 @@ class Controller:
             command.extend(["-clients", str(clients)])
         else:
             command.extend(["-max-in-flight", str(self.client_cfg.get("max_in_flight", 64))])
+        data = self.client_cfg.get("data", "")
+        if data:
+            if isinstance(data, (dict, list)):
+                data = json.dumps(data, separators=(",", ":"))
+            command.extend(["-data", str(data)])
         for header in self.client_cfg.get("headers", []):
             command.extend(["-H", str(header)])
         command.append(url)

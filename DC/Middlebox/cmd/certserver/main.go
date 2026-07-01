@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
@@ -11,19 +13,26 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
+
+	benchtrace "dc/middlebox/internal/trace"
 )
 
 const (
 	defaultCertPath = "/home/bonsai/dcmb/certs_external/server/cert.pem"
 	defaultKeyPath  = "/home/bonsai/dcmb/certs_external/server/key.pem"
 	defaultAddr     = ":5000"
+	defaultQuoteTag = "middlebox-attestation-test"
 )
 
 type certRequest struct {
-	SNI string `json:"sni"`
+	SNI      string `json:"sni"`
+	Quote    string `json:"quote"`
+	QuoteB64 string `json:"quote_b64"`
 }
 
 type certResponse struct {
@@ -39,10 +48,29 @@ type serverState struct {
 	keyB64    string
 	duration  time.Duration
 	sigScheme tls.SignatureScheme
+
+	reportData []byte
+}
+
+type quoteVerificationInfo struct {
+	DCAPReturn              uint32
+	CollateralExpiration    uint32
+	QuoteVerificationResult uint32
+	AcceptedNonTerminal     bool
 }
 
 func nowNS() int64 {
 	return time.Now().UnixNano()
+}
+
+func expectedReportData(tag string) []byte {
+	if strings.TrimSpace(tag) == "" {
+		return nil
+	}
+	sum := sha256.Sum256([]byte(tag))
+	reportData := make([]byte, 64)
+	copy(reportData, sum[:])
+	return reportData
 }
 
 func signatureScheme(name string) (tls.SignatureScheme, error) {
@@ -114,34 +142,93 @@ func (s *serverState) generateDelegation() ([]byte, []byte, error) {
 	return dcBytes, keyPEM, nil
 }
 
+func (s *serverState) verifyAttestation(req certRequest) (int, string) {
+	quoteB64 := strings.TrimSpace(req.Quote)
+	if quoteB64 == "" {
+		quoteB64 = strings.TrimSpace(req.QuoteB64)
+	}
+
+	if quoteB64 == "" {
+		fmt.Println("[SERVER] No attestation quote included; skipping quote verification")
+		return 0, ""
+	}
+
+	quoteBytes, err := base64.StdEncoding.DecodeString(quoteB64)
+	if err != nil {
+		benchtrace.Mark(benchtrace.CertServerError, req.SNI, 11)
+		fmt.Printf("[SERVER] Invalid attestation quote: %v\n", err)
+		return http.StatusBadRequest, "invalid attestation quote"
+	}
+
+	fmt.Printf("[SERVER] Attestation quote received (%d bytes)\n", len(quoteBytes))
+	fmt.Printf("[SERVER] BeginQuoteVerification = %d ns\n", nowNS())
+	benchtrace.Mark(benchtrace.CertServerQuoteVerify, req.SNI, uint64(len(quoteBytes)))
+	start := time.Now()
+	info, err := verifyQuote(quoteBytes, s.reportData)
+	elapsed := time.Since(start)
+	doneArg := uint64(info.QuoteVerificationResult)
+	if err != nil {
+		doneArg = 1
+	}
+	benchtrace.Mark(benchtrace.CertServerQuoteDone, req.SNI, doneArg)
+	fmt.Printf("[SERVER] quote verification ms=%.3f dcap_ret=0x%x qv_result=0x%x collateral_expiration=%d accepted_non_terminal=%v\n",
+		float64(elapsed.Microseconds())/1000,
+		info.DCAPReturn,
+		info.QuoteVerificationResult,
+		info.CollateralExpiration,
+		info.AcceptedNonTerminal,
+	)
+	fmt.Printf("[SERVER] EndQuoteVerification = %d ns\n", nowNS())
+
+	if err != nil {
+		benchtrace.Mark(benchtrace.CertServerError, req.SNI, 12)
+		fmt.Printf("[SERVER] Quote verification failed: %v\n", err)
+		return http.StatusForbidden, "quote verification failed"
+	}
+
+	fmt.Println("[SERVER] Quote verification succeeded")
+	return 0, ""
+}
+
 func (s *serverState) handleCerts(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
+	benchtrace.Mark(benchtrace.CertServerRequest, "certs", 0)
 	fmt.Printf("t4: [SERVER] - ClientHelloLatency = %d ns\n", nowNS())
 
 	var req certRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		benchtrace.Mark(benchtrace.CertServerError, "certs", 1)
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
 	fmt.Printf("[SERVER] SNI requested: %s\n", req.SNI)
 	if strings.TrimSpace(req.SNI) == "" {
+		benchtrace.Mark(benchtrace.CertServerError, "certs", 2)
 		http.Error(w, "missing sni", http.StatusBadRequest)
+		return
+	}
+	if status, message := s.verifyAttestation(req); status != 0 {
+		http.Error(w, message, status)
 		return
 	}
 
 	fmt.Printf("t5: [SERVER] - BeginAutoGenCerts = %d ns\n", nowNS())
+	benchtrace.Mark(benchtrace.CertServerGenerate, req.SNI, 0)
 	start := time.Now()
 	dcBytes, keyPEM, err := s.generateDelegation()
 	if err != nil {
+		benchtrace.Mark(benchtrace.CertServerGenerateDone, req.SNI, 1)
+		benchtrace.Mark(benchtrace.CertServerError, req.SNI, 3)
 		log.Printf("[SERVER] generate DC failed: %v", err)
 		http.Error(w, "dc generation failed", http.StatusInternalServerError)
 		return
 	}
 	fmt.Printf("[SERVER] generate in-process ms=%.3f\n", float64(time.Since(start).Microseconds())/1000)
+	benchtrace.Mark(benchtrace.CertServerGenerateDone, req.SNI, 0)
 	fmt.Printf("t6: [SERVER] - EndAutoGenCerts = %d ns\n", nowNS())
 
 	resp := certResponse{
@@ -152,6 +239,7 @@ func (s *serverState) handleCerts(w http.ResponseWriter, r *http.Request) {
 	}
 
 	fmt.Printf("t7: [SERVER] - Sending to middlebox: %d ns\n", nowNS())
+	benchtrace.Mark(benchtrace.CertServerResponse, req.SNI, 0)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
 }
@@ -170,15 +258,46 @@ func main() {
 	keyPath := flag.String("key-path", keyPathDefault, "base private key path")
 	sigName := flag.String("signature-scheme", "Ed25519", "delegated credential signature scheme")
 	duration := flag.Duration("duration", 168*time.Hour, "delegated credential duration")
+	tracePath := flag.String("trace", "", "binary trace output path")
+	traceBuffer := flag.Int("trace-buffer-events", 100000, "trace buffer capacity in events")
+	traceDrop := flag.Bool("trace-drop-on-full", true, "drop trace events when the buffer is full")
 	flag.Parse()
+
+	if err := benchtrace.Start(*tracePath, *traceBuffer, *traceDrop); err != nil {
+		log.Fatal(err)
+	}
+	defer benchtrace.Stop()
 
 	state, err := loadState(*certPath, *keyPath, *sigName, *duration)
 	if err != nil {
 		log.Fatal(err)
 	}
+	state.reportData = expectedReportData(defaultQuoteTag)
 
-	http.HandleFunc("/certs", state.handleCerts)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/certs", state.handleCerts)
 
 	fmt.Println("[SERVER] Go cert service listening on " + *addr)
-	log.Fatal(http.ListenAndServe(*addr, nil))
+	srv := &http.Server{Addr: *addr, Handler: mux}
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- srv.ListenAndServe()
+	}()
+
+	stopCh := make(chan os.Signal, 1)
+	signal.Notify(stopCh, os.Interrupt, syscall.SIGTERM)
+
+	select {
+	case sig := <-stopCh:
+		fmt.Printf("[SERVER] shutdown signal received: %s\n", sig)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(ctx); err != nil {
+			log.Printf("[SERVER] shutdown failed: %v", err)
+		}
+	case err := <-errCh:
+		if err != nil && err != http.ErrServerClosed {
+			log.Fatal(err)
+		}
+	}
 }

@@ -68,10 +68,16 @@ client_matrix:
   rates: [10, 100, 1000]
 
 deployments:
+  - name: direct
+    kind: direct
   - name: baremetal
     kind: baremetal
-  - name: sgx
+  - name: sgx_full
     kind: gramine_sgx
+    command: ["gramine-sgx", "middlebox"]
+  - name: sgx_empty
+    kind: gramine_sgx
+    command: ["gramine-sgx", "middlebox_emptyhandler"]
   - name: docker_gateway
     kind: docker_gateway
     runtime: docker
@@ -89,15 +95,28 @@ The controller should understand these roles:
 - request server, listening on `:8000`
 - certserver, listening on `:5000`
 - deployment under test:
+  - direct client-to-server baseline, with no middlebox process
   - bare metal `./middlebox`
-  - Gramine/SGX middlebox
+  - Gramine/SGX middlebox, full validation and empty-handler variants
   - Docker/Podman gateway plus worker containers
 - client load generator
 - CPU/resource monitor
 
-The request server and certserver are always started for each run, and they must be placed on the same configured server node.
+The request server is always started for each run. The certserver is started for any deployment that uses a middlebox, but it is skipped for direct client-to-server baseline runs because no delegated credentials are fetched. When both are used, the request server and certserver must be placed on the same configured server node.
 
 ## Deployment Strategies
+
+### Direct Client-To-Server Baseline
+
+Do not start any middlebox, gateway, or certserver process.
+
+The client connects directly to:
+
+```text
+<server.target_url><server.request_path>
+```
+
+The client should still use the same experiment parameters as middlebox runs: fresh or persistent connection mode, number of logical clients, total rate, headers, request body, and SNI/servername. This measures the request server and client overhead without the middlebox path.
 
 ### Bare Metal
 
@@ -113,15 +132,37 @@ OPERATOR_CERT_URL=<server.cert_url>
 
 ### Gramine SGX
 
-Start the SGX command configured in YAML, for example:
+Start the SGX command configured in YAML. The controller should support both full-validation and empty-handler binaries:
 
 ```text
 gramine-sgx middlebox
+gramine-sgx middlebox_emptyhandler
 ```
 
 Trace path should still be passed as an argument if the manifest permits it.
 
 Startup cost is measured from process spawn until the middlebox prints a stable ready line.
+
+The build should generate and sign separate manifests:
+
+```text
+middlebox.manifest.template              -> middlebox.manifest              -> middlebox.manifest.sgx
+middlebox_emptyhandler.manifest.template -> middlebox_emptyhandler.manifest -> middlebox_emptyhandler.manifest.sgx
+```
+
+The empty-handler manifest should be equivalent to the full manifest except for the executable and trusted binary.
+
+Manifest checklist:
+
+- allow command-line arguments so the controller can pass `-trace`, log flags, and reuse flags
+- pass through `OPERATOR_TARGET` and `OPERATOR_CERT_URL`
+- pass through `MBX_EMIT_QUOTE` for attestation-enabled runs
+- make the configured trace output path writable from inside Gramine
+- make `schemas/` readable for the full-validation binary
+- make the CA/certificate files used by the middlebox readable
+- keep `/dev/attestation/*` available when `MBX_EMIT_QUOTE=1`
+
+Attestation should be an explicit deployment/env choice. Non-SGX bare metal should not set `MBX_EMIT_QUOTE=1`, because `/dev/attestation` is not expected to exist.
 
 ### Docker/Podman Gateway
 
@@ -200,7 +241,9 @@ For each matrix combination:
    - stop/remove old gateway container
    - remove old `dcmb-worker-*` containers from the previous run
    - clear or recreate trace directories
-4. Start request server and certserver on the configured server node.
+4. Start request server on the configured server node.
+   - Start certserver too for middlebox/gateway/SGX deployments.
+   - Skip certserver for direct client-to-server baseline deployments.
 5. Start deployment under test.
 6. Wait for readiness.
 7. Sleep `warmup_s`.
@@ -253,7 +296,9 @@ Start small:
 
 Then add:
 
-1. Gramine SGX deployment.
-2. Remote SSH wrapper and log copy.
-3. Podman runtime adapter.
-4. CSV merge/duration analysis helpers.
+1. Direct client-to-server baseline deployment.
+2. Gramine SGX deployment with full-validation and empty-handler manifests. Done for local first pass.
+3. Certserver-side quote verification in the Go certserver. Done with the DCAP cgo verifier path.
+4. Remote SSH wrapper and log copy.
+5. Podman runtime adapter.
+6. CSV merge/duration analysis helpers.

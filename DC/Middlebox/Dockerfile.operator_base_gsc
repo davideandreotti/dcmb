@@ -13,6 +13,7 @@ RUN mkdir -p /certs /home/bonsai/Desktop/MasterThesis/DC/certs
 # DEVE essere compilato con cfgo (il fork Go con supporto Delegated Credentials)
 # prima di eseguire: gsc build mb_operator_base Dockerfile.operator_base_gsc
 COPY middlebox_operator /app/operator
+COPY schemas /app/schemas
 RUN chmod +x /app/operator
 
 WORKDIR /app

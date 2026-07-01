@@ -21,8 +21,8 @@ type Schema struct {
 	JsonSchemaFilename string
 }
 
-// Accept POST and GET for the init endpoint to allow testing with GET as well
-var initMessageType = MessageType{"POST|GET", "/function/init", []Schema{}}
+// Accept POST and GET for the init endpoint to allow testing with GET as well.
+var initMessageType = MessageType{"POST|GET", "/function/init", []Schema{{func(jsonBody any) any { return jsonBody }, "schemas/init-request-schema.json"}}}
 var productsMessageType = MessageType{"POST|GET", "/function/product-catalog-api/products", []Schema{{func(jsonBody any) any { return jsonBody }, "schemas/products-request-schema.json"}}}
 var categoriesMessageType = MessageType{"POST|GET", "/function/product-catalog-api/categories", []Schema{}}
 var buildProductMessageType = MessageType{"POST|GET", "/function/product-catalog-builder/product", []Schema{{func(jsonBody any) any { return jsonBody }, "schemas/retail-stream-schema-ingress.json"}, {func(jsonBody any) any { return jsonBody.(map[string]any)["data"] }, "schemas/product-create-schema.json"}}}

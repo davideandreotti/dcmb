@@ -67,3 +67,8 @@ DC/Middlebox/middlebox.manifest.sgx
 DC/Middlebox/middlebox.manifest
 DC/Middlebox/certserver
 DC/Middlebox/sample-benchmarking-code
+DC/Middlebox/middlebox_emptyhandler.sig
+DC/Middlebox/middlebox_emptyhandler.manifest
+DC/Middlebox/middlebox_emptyhandler.manifest.sgx
+DC/Middlebox/middlebox_emptyhandler
+

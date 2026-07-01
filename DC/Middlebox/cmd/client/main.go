@@ -236,12 +236,13 @@ func runRequest(
 	caPath string,
 	serverName string,
 ) (int, time.Duration, error) {
-	info(fmt.Sprintf("Calling request %d: %s as client_id=%s", id, rawURL, clientID))
+	requestClientID := fmt.Sprintf("%s-%d", clientID, id)
+	info(fmt.Sprintf("Calling request %d: %s as client_id=%s", id, rawURL, requestClientID))
 
-	traceID := fmt.Sprintf("%s-%d", clientID, id)
+	traceID := requestClientID
 	benchtrace.Mark(benchtrace.ClientRequestStart, traceID, uint64(id))
 	start := time.Now()
-	response, status, err := httpsClient(method, rawURL, headers, body, clientID, caPath, serverName, traceID)
+	response, status, err := httpsClient(method, rawURL, headers, body, requestClientID, caPath, serverName, traceID)
 	latency := time.Since(start)
 	if err != nil {
 		return status, latency, err
@@ -269,10 +270,11 @@ func runIsolatedWarmupRequests(
 ) error {
 	for i := 1; i <= count; i++ {
 		traceID := fmt.Sprintf("warmup-%d", i)
-		info(fmt.Sprintf("Calling warmup request %d: %s as client_id=%s", i, rawURL, clientID))
+		warmupClientID := fmt.Sprintf("%s-warmup", clientID)
+		info(fmt.Sprintf("Calling warmup request %d: %s as client_id=%s", i, rawURL, warmupClientID))
 		benchtrace.Mark(benchtrace.ClientRequestStart, traceID, uint64(i))
 
-		response, status, err := httpsClient(method, rawURL, headers, body, clientID, caPath, serverName, traceID)
+		response, status, err := httpsClient(method, rawURL, headers, body, warmupClientID, caPath, serverName, traceID)
 		if err != nil {
 			return fmt.Errorf("warmup request %d failed: %w", i, err)
 		}

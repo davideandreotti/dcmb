@@ -27,15 +27,11 @@ require_command() {
 }
 
 common_tags=(trace)
-middlebox_tags=(trace)
-case "${1:-middleboxHandler}" in
-    middleboxHandler|handler|full)
-        ;;
-    emptyHandler|empty|emptyhandler)
-        middlebox_tags+=(emptyhandler)
+case "${1:-all}" in
+    all|middleboxHandler|handler|full|emptyHandler|empty|emptyhandler)
         ;;
     *)
-        echo "Usage: $0 [middleboxHandler|emptyHandler]"
+        echo "Usage: $0 [all|middleboxHandler|emptyHandler]"
         exit 1
     ;;
 esac
@@ -46,7 +42,9 @@ join_tags() {
 }
 
 common_build_args=(-tags "$(join_tags "${common_tags[@]}")")
-middlebox_build_args=(-tags "$(join_tags "${middlebox_tags[@]}")")
+certserver_build_args=(-tags "$(join_tags trace dcapverify)")
+middlebox_build_args=(-tags "$(join_tags trace)")
+middlebox_empty_build_args=(-tags "$(join_tags trace emptyhandler)")
 
 build() {
     local name="$1"
@@ -77,26 +75,31 @@ generate_or_find_enclave_key() {
 }
 
 build_gramine_manifest() {
+    local name="$1"
+    local template="$SCRIPT_DIR/${name}.manifest.template"
+    local manifest="$SCRIPT_DIR/${name}.manifest"
+    local output="$SCRIPT_DIR/${name}.manifest.sgx"
+
     require_command gramine-manifest
     require_command gramine-sgx-sign
 
-    if [[ ! -f "$SCRIPT_DIR/middlebox.manifest.template" ]]; then
-        echo "Missing Gramine manifest template: $SCRIPT_DIR/middlebox.manifest.template" >&2
+    if [[ ! -f "$template" ]]; then
+        echo "Missing Gramine manifest template: $template" >&2
         exit 1
     fi
 
     generate_or_find_enclave_key
 
-    echo "[COMPILE] generating middlebox.manifest"
-    gramine-manifest middlebox.manifest.template middlebox.manifest
+    echo "[COMPILE] generating ${name}.manifest"
+    gramine-manifest "$template" "$manifest"
 
-    echo "[COMPILE] signing middlebox.manifest.sgx with $ENCLAVE_KEY"
+    echo "[COMPILE] signing ${name}.manifest.sgx with $ENCLAVE_KEY"
     gramine-sgx-sign \
-        --manifest middlebox.manifest \
+        --manifest "$manifest" \
         --key "$ENCLAVE_KEY" \
-        --output middlebox.manifest.sgx
+        --output "$output"
 
-    echo "[COMPILE] OK: $SCRIPT_DIR/middlebox.manifest.sgx"
+    echo "[COMPILE] OK: $output"
 }
 
 build_docker_images() {
@@ -120,9 +123,11 @@ build_docker_images() {
 (
     cd "$SCRIPT_DIR"
     build "client" "cmd/client" "$SCRIPT_DIR/client" "${common_build_args[@]}"
-    build "certserver" "cmd/certserver" "$SCRIPT_DIR/certserver" "${common_build_args[@]}"
+    build "certserver" "cmd/certserver" "$SCRIPT_DIR/certserver" "${certserver_build_args[@]}"
     build "middlebox" "cmd/middlebox" "$SCRIPT_DIR/middlebox" "${middlebox_build_args[@]}"
+    build "middlebox_emptyhandler" "cmd/middlebox" "$SCRIPT_DIR/middlebox_emptyhandler" "${middlebox_empty_build_args[@]}"
     build "middlebox_gateway" "cmd/gateway" "$SCRIPT_DIR/middlebox_gateway" "${common_build_args[@]}"
-    build_gramine_manifest
+    build_gramine_manifest "middlebox"
+    build_gramine_manifest "middlebox_emptyhandler"
     build_docker_images
 )

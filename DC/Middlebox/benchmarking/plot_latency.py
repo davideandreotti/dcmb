@@ -339,6 +339,7 @@ def plot_timeseries(samples: list[dict[str, Any]], run_summaries: list[dict[str,
         ax.set_xlabel(x_label)
         ax.set_ylabel(y_label)
         ax.grid(True, alpha=0.25)
+        ax.set_ylim(bottom=0)
 
         if show_failure_annotations and summary["failed_count"] > 0:
             ax.text(

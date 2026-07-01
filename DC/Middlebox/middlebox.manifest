@@ -9,6 +9,12 @@ insecure__use_cmdline_argv = true
 LD_LIBRARY_PATH = "/lib:/usr/lib:/usr/lib/x86_64-linux-gnu"
 GODEBUG = "netdns=go"
 
+[loader.env.OPERATOR_TARGET]
+passthrough = true
+
+[loader.env.OPERATOR_CERT_URL]
+passthrough = true
+
 [loader.env.MBX_EMIT_QUOTE]
 passthrough = true
 
@@ -23,6 +29,8 @@ mounts = [
     { path = "/usr/lib/x86_64-linux-gnu", uri = "file:/usr/lib/x86_64-linux-gnu" },
     { path = "/etc", uri = "file:/etc" },
     { path = "/home/bonsai/dcmb/certs_external/", uri = "file:/home/bonsai/dcmb/certs_external/" },
+    { type = "chroot", path = "/trace", uri = "file:/home/bonsai/dcmb/DC/Middlebox/experiments" },
+    { path = "/schemas", uri = "file:schemas" },
 ]
 
 [sgx]
@@ -36,6 +44,8 @@ allowed_files = [
     "file:/etc/host.conf",
     "file:/etc/resolv.conf",
     "file:/etc/ssl/certs/ca-certificates.crt",
+    "file:/home/bonsai/dcmb/DC/Middlebox/experiments/",
+    "file:/home/bonsai/dcmb/DC/Middlebox/tests/",
 ]
 isvprodid = 0
 isvsvn = 0
@@ -44,7 +54,43 @@ use_exinfo = false
 
 [[sgx.trusted_files]]
 uri = "file:middlebox"
-sha256 = "c9b5c731f81db657ce5f30d9d28ecc8a63d0cfa6071167e33b740aab66a54f1f"
+sha256 = "9ea9d19a3efe65b3ef5b02a2ea7b4285d30a1536b514377ddb85b416172674ef"
+
+[[sgx.trusted_files]]
+uri = "file:schemas/init-request-schema.json"
+sha256 = "497745335e5e71c6a4ed96c3931c932df7f5b2565473082e4ed3e0bc21ffcec9"
+
+[[sgx.trusted_files]]
+uri = "file:schemas/photo-assignment-schema.json"
+sha256 = "6af8df12fd2872b2051158206166d77e5234bc5bf1745e8d663f1f28906ef707"
+
+[[sgx.trusted_files]]
+uri = "file:schemas/photo-request-schema.json"
+sha256 = "dfda919eb90f4894b87bc54760c85c7cf5ad892c87520d4aa442a13e834a8acf"
+
+[[sgx.trusted_files]]
+uri = "file:schemas/product-create-schema.json"
+sha256 = "2617b70cf1822772363c7aa4803d754f6e667a0c8e6b732ed232e0ba9c248b4a"
+
+[[sgx.trusted_files]]
+uri = "file:schemas/product-image-schema.json"
+sha256 = "e6e9f43b8b753dcf109cf5113bd450837a28ecfd881e34f157d66a38562e959e"
+
+[[sgx.trusted_files]]
+uri = "file:schemas/product-purchase-schema.json"
+sha256 = "1fc228dc1a6a67548ccaec1d923587a661370443f856811e6691f0fdd2115218"
+
+[[sgx.trusted_files]]
+uri = "file:schemas/products-request-schema.json"
+sha256 = "aa617671d3090f2a68a86578f63fab03c224c9548957295d33e1026332d20e5f"
+
+[[sgx.trusted_files]]
+uri = "file:schemas/retail-stream-schema-ingress.json"
+sha256 = "972e42e90e6640207d9b4c0b87b80e9968cdff4f5ba15a9fbd428496e08f870b"
+
+[[sgx.trusted_files]]
+uri = "file:schemas/user-update-phone-schema.json"
+sha256 = "c0f7a2522aab5c9b7a5619c30f1ac4fc9b9751fe19c85ce432bc34652354b68e"
 
 [[sgx.trusted_files]]
 uri = "file:/usr/local/lib/x86_64-linux-gnu/gramine/runtime/glibc/crt1.o"

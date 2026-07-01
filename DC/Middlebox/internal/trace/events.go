@@ -31,29 +31,33 @@ const (
 	GatewayContainerRemove     uint32 = 2017
 	GatewayContainerRemoved    uint32 = 2018
 
-	MiddleboxTLSGetCertStart    uint32 = 3001
-	MiddleboxTLSGetCertDone     uint32 = 3002
-	MiddleboxDelegationCacheHit uint32 = 3003
-	MiddleboxDelegationMiss     uint32 = 3004
-	MiddleboxDelegationFetch    uint32 = 3005
-	MiddleboxDelegationFetched  uint32 = 3006
-	MiddleboxAttestationStart   uint32 = 3007
-	MiddleboxAttestationDone    uint32 = 3008
-	MiddleboxValidationStart    uint32 = 3009
-	MiddleboxValidationDone     uint32 = 3010
-	MiddleboxRequestStart       uint32 = 3011
-	MiddleboxRequestDone        uint32 = 3012
-	MiddleboxUpstreamDialStart  uint32 = 3013
-	MiddleboxUpstreamDialDone   uint32 = 3014
-	MiddleboxUpstreamTLSStart   uint32 = 3015
-	MiddleboxUpstreamTLSDone    uint32 = 3016
-	MiddleboxProxyError         uint32 = 3017
+	MiddleboxTLSGetCertStart         uint32 = 3001
+	MiddleboxTLSGetCertDone          uint32 = 3002
+	MiddleboxDelegationCacheHit      uint32 = 3003
+	MiddleboxDelegationMiss          uint32 = 3004
+	MiddleboxDelegationFetch         uint32 = 3005
+	MiddleboxDelegationFetched       uint32 = 3006
+	MiddleboxAttestationStart        uint32 = 3007
+	MiddleboxAttestationDone         uint32 = 3008
+	MiddleboxValidationStart         uint32 = 3009
+	MiddleboxValidationDone          uint32 = 3010
+	MiddleboxRequestStart            uint32 = 3011
+	MiddleboxRequestDone             uint32 = 3012
+	MiddleboxUpstreamDialStart       uint32 = 3013
+	MiddleboxUpstreamDialDone        uint32 = 3014
+	MiddleboxUpstreamTLSStart        uint32 = 3015
+	MiddleboxUpstreamTLSDone         uint32 = 3016
+	MiddleboxProxyError              uint32 = 3017
+	MiddleboxResponseValidationStart uint32 = 3018
+	MiddleboxResponseValidationDone  uint32 = 3019
 
 	CertServerRequest      uint32 = 4001
 	CertServerGenerate     uint32 = 4002
 	CertServerGenerateDone uint32 = 4003
 	CertServerResponse     uint32 = 4004
 	CertServerError        uint32 = 4005
+	CertServerQuoteVerify  uint32 = 4006
+	CertServerQuoteDone    uint32 = 4007
 )
 
 var eventNames = map[uint32]string{
@@ -87,29 +91,33 @@ var eventNames = map[uint32]string{
 	GatewayContainerRemove:     "gateway_container_remove",
 	GatewayContainerRemoved:    "gateway_container_removed",
 
-	MiddleboxTLSGetCertStart:    "middlebox_tls_get_cert_start",
-	MiddleboxTLSGetCertDone:     "middlebox_tls_get_cert_done",
-	MiddleboxDelegationCacheHit: "middlebox_delegation_cache_hit",
-	MiddleboxDelegationMiss:     "middlebox_delegation_miss",
-	MiddleboxDelegationFetch:    "middlebox_delegation_fetch",
-	MiddleboxDelegationFetched:  "middlebox_delegation_fetched",
-	MiddleboxAttestationStart:   "middlebox_attestation_start",
-	MiddleboxAttestationDone:    "middlebox_attestation_done",
-	MiddleboxValidationStart:    "middlebox_validation_start",
-	MiddleboxValidationDone:     "middlebox_validation_done",
-	MiddleboxRequestStart:       "middlebox_request_start",
-	MiddleboxRequestDone:        "middlebox_request_done",
-	MiddleboxUpstreamDialStart:  "middlebox_upstream_dial_start",
-	MiddleboxUpstreamDialDone:   "middlebox_upstream_dial_done",
-	MiddleboxUpstreamTLSStart:   "middlebox_upstream_tls_start",
-	MiddleboxUpstreamTLSDone:    "middlebox_upstream_tls_done",
-	MiddleboxProxyError:         "middlebox_proxy_error",
+	MiddleboxTLSGetCertStart:         "middlebox_tls_get_cert_start",
+	MiddleboxTLSGetCertDone:          "middlebox_tls_get_cert_done",
+	MiddleboxDelegationCacheHit:      "middlebox_delegation_cache_hit",
+	MiddleboxDelegationMiss:          "middlebox_delegation_miss",
+	MiddleboxDelegationFetch:         "middlebox_delegation_fetch",
+	MiddleboxDelegationFetched:       "middlebox_delegation_fetched",
+	MiddleboxAttestationStart:        "middlebox_attestation_start",
+	MiddleboxAttestationDone:         "middlebox_attestation_done",
+	MiddleboxValidationStart:         "middlebox_validation_start",
+	MiddleboxValidationDone:          "middlebox_validation_done",
+	MiddleboxRequestStart:            "middlebox_request_start",
+	MiddleboxRequestDone:             "middlebox_request_done",
+	MiddleboxUpstreamDialStart:       "middlebox_upstream_dial_start",
+	MiddleboxUpstreamDialDone:        "middlebox_upstream_dial_done",
+	MiddleboxUpstreamTLSStart:        "middlebox_upstream_tls_start",
+	MiddleboxUpstreamTLSDone:         "middlebox_upstream_tls_done",
+	MiddleboxProxyError:              "middlebox_proxy_error",
+	MiddleboxResponseValidationStart: "middlebox_response_validation_start",
+	MiddleboxResponseValidationDone:  "middlebox_response_validation_done",
 
 	CertServerRequest:      "certserver_request",
 	CertServerGenerate:     "certserver_generate",
 	CertServerGenerateDone: "certserver_generate_done",
 	CertServerResponse:     "certserver_response",
 	CertServerError:        "certserver_error",
+	CertServerQuoteVerify:  "certserver_quote_verify",
+	CertServerQuoteDone:    "certserver_quote_done",
 }
 
 func EventName(code uint32) string {

@@ -1,0 +1,23 @@
+{
+  "$schema": "http://json-schema.org/schema#",
+  "self": {
+    "vendor": "com.nava",
+    "name": "function/init",
+    "format": "jsonschema",
+    "version": "1-0-0"
+  },
+  "type": "object",
+  "properties": {
+    "operation": {
+      "type": "string",
+      "const": "init"
+    },
+    "client_id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "operation"
+  ],
+  "additionalProperties": true
+}

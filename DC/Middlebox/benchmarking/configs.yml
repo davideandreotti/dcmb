@@ -1,5 +1,5 @@
 campaign:
-  name: latency_1
+  name: comparisons
   output_root: experiments
   runs: 1
   duration_s: 30
@@ -37,10 +37,14 @@ server:
 
 client:
   binary: ./client
-  method: GET
+  method: POST
   servername: server
+  data:
+    operation: init
   headers:
     - "Authorization: Bearer token"
+    - "Content-Type: application/json"
+    - "X-Testing: 1"
   max_in_flight: 64
 
 client_matrix:
@@ -53,15 +57,33 @@ deployments:
     kind: baremetal
     command: ["./middlebox", "-log_level", "debug", "-minimal_logs=false", "-reuse_dc=false"]
 
-  - name: docker_gateway
-    kind: docker_gateway
-    # runtime: docker
-    # image: dcmb_gateway:docker
-    # container_name: dcmb_gateway
-    # network: dcmb-middlebox-net
-    # worker_name_prefix: dcmb-worker
-    min_ready: 10
-    scale_up_by: 10
-    container_stats_scope: all
-    # worker_trace_enabled: true
-    # docker_api_timeout_ms: 5000
+  # - name: baremetal_empty
+  #   kind: baremetal
+  #   command: ["./middlebox_emptyhandler", "-log_level", "debug", "-minimal_logs=false", "-reuse_dc=true"]
+
+
+  - name: sgx_full
+    kind: gramine_sgx
+    command: ["gramine-sgx", "middlebox", "-log_level", "debug", "-minimal_logs=false", "-reuse_dc=false"]
+    env:
+      MBX_EMIT_QUOTE: "1"
+
+  # - name: sgx_empty
+  #   kind: gramine_sgx
+  #   command: ["gramine-sgx", "middlebox_emptyhandler", "-log_level", "debug", "-minimal_logs=false", "-reuse_dc=true"]
+  #   env:
+  #     MBX_EMIT_QUOTE: "1"
+
+
+  # - name: docker_gateway
+  #   kind: docker_gateway
+  #   # runtime: docker
+  #   # image: dcmb_gateway:docker
+  #   # container_name: dcmb_gateway
+  #   # network: dcmb-middlebox-net
+  #   # worker_name_prefix: dcmb-worker
+  #   min_ready: 10
+  #   scale_up_by: 10
+  #   container_stats_scope: all
+  #   # worker_trace_enabled: true
+  #   # docker_api_timeout_ms: 5000
