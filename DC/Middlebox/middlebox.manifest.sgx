@@ -54,7 +54,7 @@ use_exinfo = false
 
 [[sgx.trusted_files]]
 uri = "file:middlebox"
-sha256 = "9ea9d19a3efe65b3ef5b02a2ea7b4285d30a1536b514377ddb85b416172674ef"
+sha256 = "f72d8474f88688516bf73e75108c0388b70fc581526390fddfbdbe180c4e7e9a"
 
 [[sgx.trusted_files]]
 uri = "file:schemas/init-request-schema.json"

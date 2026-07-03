@@ -30,7 +30,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # WORKDIR /certs
 WORKDIR /app
 
-COPY DC/Middlebox/middlebox /app/middlebox
+ARG MIDDLEBOX_BINARY=middlebox
+COPY DC/Middlebox/${MIDDLEBOX_BINARY} /app/middlebox
 COPY DC/Middlebox/schemas /app/schemas
 RUN chmod +x /app/middlebox
 

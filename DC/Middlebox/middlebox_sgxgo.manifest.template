@@ -1,0 +1,68 @@
+libos.entrypoint = "/middlebox_sgxgo"
+
+loader.log_level = "warning"
+loader.env.LD_LIBRARY_PATH = "/lib:/usr/lib:/usr/lib/x86_64-linux-gnu"
+loader.env.GODEBUG = "netdns=go"
+loader.env.GO_SGX_RUNTIME = "1"
+loader.insecure__use_cmdline_argv = true
+loader.env.OPERATOR_TARGET = { passthrough = true }
+loader.env.OPERATOR_CERT_URL = { passthrough = true }
+loader.env.MBX_EMIT_QUOTE = { passthrough = true }
+
+fs.mounts = [
+  # Gramine runtime
+  { path = "/lib", uri = "file:{{ gramine.runtimedir() }}" },
+
+  # Librerie di sistema
+  { path = "/usr/lib", uri = "file:/usr/lib" },
+  { path = "/usr/lib/x86_64-linux-gnu", uri = "file:/usr/lib/x86_64-linux-gnu" },
+
+  # Config sistema
+  { path = "/etc", uri = "file:/etc" },
+
+  # Certificati (DEVE esistere!)
+  { path = "/home/bonsai/dcmb/certs_external/", uri = "file:/home/bonsai/dcmb/certs_external/" },
+
+  # Experiment outputs and trace files
+  { type = "chroot", path = "/trace", uri = "file:/home/bonsai/dcmb/DC/Middlebox/experiments" },
+
+  # JSON schemas for the full validation handler
+  { path = "/schemas", uri = "file:schemas" }
+  ]
+
+# =========================
+# SGX CONFIG
+# =========================
+
+sgx.debug = true
+sgx.enclave_size = "64M"
+sgx.edmm_enable = false
+sgx.max_threads = 16
+sgx.remote_attestation = "dcap"
+#sgx.enable_stats = true
+#sgx.profile.enable = "all"
+sgx.file_check_policy = "allow_all_but_log"
+# =========================
+# TRUSTED FILES (read only)
+# =========================
+
+sgx.trusted_files = [
+  "file:middlebox_sgxgo",
+  "file:schemas/",
+  "file:{{ gramine.runtimedir() }}/",
+  "file:/home/bonsai/dcmb/certs_external/server/cert.pem",
+  "file:/home/bonsai/dcmb/certs_external/server/key.pem"
+]
+
+# =========================
+# ALLOWED FILES (read and write)
+# =========================
+
+sgx.allowed_files = [
+  "file:/etc/host.conf",
+  "file:/etc/resolv.conf",
+  "file:/etc/ssl/certs/ca-certificates.crt",
+  "file:/home/bonsai/dcmb/DC/Middlebox/experiments/",
+  "file:/home/bonsai/dcmb/DC/Middlebox/tests/",
+#  "file:jwks.dat"
+]

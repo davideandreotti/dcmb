@@ -7,6 +7,7 @@ import csv
 import itertools
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -67,12 +68,15 @@ class ManagedProcess:
     stderr_path: Path
     env: dict[str, str] = field(default_factory=dict)
     ready_patterns: list[str] = field(default_factory=list)
+    event_patterns: list[str] = field(default_factory=list)
 
     proc: subprocess.Popen[str] | None = None
     started_ns: int | None = None
     ready_ns: int | None = None
     ready_line: str = ""
+    events: list[dict[str, Any]] = field(default_factory=list)
     _ready_event: threading.Event = field(default_factory=threading.Event)
+    _event_lock: threading.Lock = field(default_factory=threading.Lock)
     _threads: list[threading.Thread] = field(default_factory=list)
 
     def start(self) -> None:
@@ -113,11 +117,23 @@ class ManagedProcess:
     def _copy_stream(self, stream: Any, path: Path) -> None:
         with path.open("w", encoding="utf-8", buffering=1) as handle:
             for line in stream:
+                stripped = line.strip()
                 handle.write(line)
+                if self.event_patterns:
+                    for pattern in self.event_patterns:
+                        if pattern in line:
+                            with self._event_lock:
+                                self.events.append(
+                                    {
+                                        "pattern": pattern,
+                                        "ts_ns": now_ns(),
+                                        "line": stripped,
+                                    }
+                                )
                 if self.ready_patterns and not self._ready_event.is_set():
                     if any(pattern in line for pattern in self.ready_patterns):
                         self.ready_ns = now_ns()
-                        self.ready_line = line.strip()
+                        self.ready_line = stripped
                         self._ready_event.set()
 
     def wait_ready(self, timeout_s: float) -> None:
@@ -184,6 +200,7 @@ class ManagedProcess:
             "ready_ns": self.ready_ns,
             "startup_ns": (self.ready_ns - self.started_ns) if self.ready_ns and self.started_ns else None,
             "ready_line": self.ready_line,
+            "events": self.events,
             "stdout": str(self.stdout_path),
             "stderr": str(self.stderr_path),
         }
@@ -222,6 +239,12 @@ class ProcessCPUMonitor:
                     "user_time_s",
                     "system_time_s",
                     "rss_bytes",
+                    "vms_bytes",
+                    "num_threads",
+                    "rss_tree_bytes",
+                    "vms_tree_bytes",
+                    "num_threads_tree",
+                    "children_count",
                 ],
             )
             writer.writeheader()
@@ -234,6 +257,19 @@ class ProcessCPUMonitor:
                         proc = psutil.Process(managed.proc.pid)
                         cpu = proc.cpu_times()
                         mem = proc.memory_info()
+                        rss_tree = mem.rss
+                        vms_tree = mem.vms
+                        threads_tree = proc.num_threads()
+                        children_count = 0
+                        for child in proc.children(recursive=True):
+                            try:
+                                child_mem = child.memory_info()
+                                rss_tree += child_mem.rss
+                                vms_tree += child_mem.vms
+                                threads_tree += child.num_threads()
+                                children_count += 1
+                            except psutil.Error:
+                                continue
                         writer.writerow(
                             {
                                 "ts_ns": ts,
@@ -243,6 +279,12 @@ class ProcessCPUMonitor:
                                 "user_time_s": cpu.user,
                                 "system_time_s": cpu.system,
                                 "rss_bytes": mem.rss,
+                                "vms_bytes": mem.vms,
+                                "num_threads": proc.num_threads(),
+                                "rss_tree_bytes": rss_tree,
+                                "vms_tree_bytes": vms_tree,
+                                "num_threads_tree": threads_tree,
+                                "children_count": children_count,
                             }
                         )
                     except psutil.Error:
@@ -454,7 +496,10 @@ class Deployment:
     def cleanup_before(self) -> None:
         return
 
-    def start(self) -> ManagedProcess:
+    def uses_certserver(self) -> bool:
+        return True
+
+    def start(self) -> ManagedProcess | None:
         raise NotImplementedError
 
     def stop(self) -> None:
@@ -466,6 +511,17 @@ class Deployment:
 
     def container_monitor(self) -> ContainerStatsMonitor | None:
         return None
+
+
+class DirectDeployment(Deployment):
+    def uses_certserver(self) -> bool:
+        return False
+
+    def start(self) -> ManagedProcess | None:
+        return None
+
+    def client_url(self) -> str:
+        return f"{self.controller.server_target_url}{self.controller.request_path}"
 
 
 class BaremetalDeployment(Deployment):
@@ -554,9 +610,11 @@ class DockerGatewayDeployment(Deployment):
         container_name = str(self.cfg.get("container_name", "dcmb_gateway"))
         network = str(self.cfg.get("network", "dcmb-middlebox-net"))
         image = str(self.cfg.get("image", "dcmb_gateway:docker"))
+        worker_image = str(self.cfg.get("worker_image", "dcmiddlebox-worker:baseline"))
         min_ready = str(self.cfg.get("min_ready", 1))
         scale_up_by = str(self.cfg.get("scale_up_by", min_ready))
         worker_trace_enabled = str(bool(self.cfg.get("worker_trace_enabled", False))).lower()
+        worker_reuse_dc = str(bool(self.cfg.get("worker_reuse_dc", True))).lower()
         traces_host = str(self.run.traces_dir.resolve())
 
         cmd = [
@@ -578,9 +636,13 @@ class DockerGatewayDeployment(Deployment):
             "-e",
             "GATEWAY_BACKEND_MODE=docker",
             "-e",
+            f"DOCKER_WORKER_IMAGE={worker_image}",
+            "-e",
             f"OPERATOR_TARGET={self.controller.server_target_url}",
             "-e",
             f"OPERATOR_CERT_URL={self.controller.server_cert_url}",
+            "-e",
+            f"DOCKER_WORKER_REUSE_DC={worker_reuse_dc}",
             "-e",
             f"DOCKER_MIN_READY_OPERATORS={min_ready}",
             "-e",
@@ -607,6 +669,7 @@ class DockerGatewayDeployment(Deployment):
             cwd=self.controller.middlebox_dir,
             env={},
             ready_patterns=["[GATEWAY_READY]"],
+            event_patterns=["docker worker ready"],
         )
         return self.proc
 
@@ -776,14 +839,18 @@ class Controller:
     def iter_matrix(self) -> Any:
         matrix = self.config.get("client_matrix", {})
         deployments = self.config.get("deployments", [])
-        modes = matrix.get("modes", ["fresh"])
-        clients_values = matrix.get("clients", [1])
-        rates = matrix.get("rates", [10])
-        for deployment_cfg, mode, clients, rate in itertools.product(deployments, modes, clients_values, rates):
-            if str(mode) == "fresh" and float(rate) <= 0:
-                continue
-            for iteration in range(1, self.runs + 1):
-                yield deployment_cfg, str(mode), int(clients), float(rate), iteration
+        default_modes = matrix.get("modes", ["fresh"])
+        default_clients_values = matrix.get("clients", [1])
+        default_rates = matrix.get("rates", [10])
+        for deployment_cfg in deployments:
+            modes = deployment_cfg.get("modes", default_modes)
+            clients_values = deployment_cfg.get("clients", default_clients_values)
+            rates = deployment_cfg.get("rates", default_rates)
+            for mode, clients, rate in itertools.product(modes, clients_values, rates):
+                if str(mode) == "fresh" and float(rate) <= 0:
+                    continue
+                for iteration in range(1, self.runs + 1):
+                    yield deployment_cfg, str(mode), int(clients), float(rate), iteration
 
     def run_name(self, deployment_cfg: dict[str, Any], mode: str, clients: int, rate: float, iteration: int) -> str:
         rate_text = "closed" if rate <= 0 else f"rate{rate:g}"
@@ -825,17 +892,19 @@ class Controller:
         client_proc: ManagedProcess | None = None
 
         try:
-            certserver = self.start_certserver(run_ctx)
-            managed.append(("certserver", certserver))
-            certserver.wait_ready(self.readiness_timeout_s)
+            if deployment.uses_certserver():
+                certserver = self.start_certserver(run_ctx)
+                managed.append(("certserver", certserver))
+                certserver.wait_ready(self.readiness_timeout_s)
 
             appserver = self.start_appserver(run_ctx)
             managed.append(("server", appserver))
             appserver.wait_ready(self.readiness_timeout_s)
 
             deployment_proc = deployment.start()
-            managed.append((deployment.kind, deployment_proc))
-            deployment_proc.wait_ready(self.readiness_timeout_s)
+            if deployment_proc:
+                managed.append((deployment.kind, deployment_proc))
+                deployment_proc.wait_ready(self.readiness_timeout_s)
 
             if self.warmup_s > 0:
                 time.sleep(self.warmup_s)
@@ -869,10 +938,13 @@ class Controller:
             metadata["finished_ns"] = now_ns()
             metadata["processes"] = {role: proc.metadata() for role, proc in managed}
             self.write_metadata(run_ctx, metadata)
+            self.write_startup_csv(run_ctx, managed)
             self.convert_traces(run_ctx)
 
     def make_deployment(self, cfg: dict[str, Any], run_ctx: RunContext) -> Deployment:
         kind = str(cfg.get("kind"))
+        if kind == "direct":
+            return DirectDeployment(cfg, self, run_ctx)
         if kind == "baremetal":
             return BaremetalDeployment(cfg, self, run_ctx)
         if kind == "gramine_sgx":
@@ -888,6 +960,7 @@ class Controller:
         cwd: Path,
         env: dict[str, str],
         ready_patterns: list[str],
+        event_patterns: list[str] | None = None,
     ) -> ManagedProcess:
         current_run = getattr(self, "_current_run", None)
         if current_run is None:
@@ -901,6 +974,7 @@ class Controller:
             stderr_path=current_run.stderr_dir / f"{role}.log",
             env=env,
             ready_patterns=ready_patterns,
+            event_patterns=event_patterns or [],
         )
         proc.start()
         return proc
@@ -981,6 +1055,94 @@ class Controller:
             env={},
             ready_patterns=[],
         )
+
+    def write_startup_csv(self, run_ctx: RunContext, managed: list[tuple[str, ManagedProcess]]) -> None:
+        path = run_ctx.csv_dir / "startup.csv"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fieldnames = [
+            "role",
+            "metric",
+            "name",
+            "kind",
+            "start_ns",
+            "ready_ns",
+            "startup_ns",
+            "startup_ms",
+            "source",
+            "detail",
+        ]
+
+        rows: list[dict[str, Any]] = []
+        for kind, proc in managed:
+            if proc.role == "client" or proc.ready_ns is None or proc.started_ns is None:
+                continue
+            startup_ns = proc.ready_ns - proc.started_ns
+            rows.append(
+                {
+                    "role": proc.role,
+                    "metric": "process_ready",
+                    "name": proc.role,
+                    "kind": kind,
+                    "start_ns": proc.started_ns,
+                    "ready_ns": proc.ready_ns,
+                    "startup_ns": startup_ns,
+                    "startup_ms": f"{startup_ns / 1_000_000:.3f}",
+                    "source": "controller_ready_line",
+                    "detail": proc.ready_line,
+                }
+            )
+
+            if proc.role != "gateway":
+                continue
+
+            first_worker_event: dict[str, Any] | None = None
+            for event in proc.events:
+                if event.get("pattern") != "docker worker ready":
+                    continue
+                line = str(event.get("line", ""))
+                match = re.search(r"name=(\S+).*startup_ms=(\d+(?:\.\d+)?)", line)
+                worker_name = match.group(1) if match else ""
+                worker_startup_ms = match.group(2) if match else ""
+
+                if first_worker_event is None:
+                    first_worker_event = event
+                    if proc.started_ns is not None:
+                        ready_ns = int(event["ts_ns"])
+                        startup_ns = ready_ns - proc.started_ns
+                        rows.append(
+                            {
+                                "role": "gateway",
+                                "metric": "first_worker_ready",
+                                "name": worker_name,
+                                "kind": kind,
+                                "start_ns": proc.started_ns,
+                                "ready_ns": ready_ns,
+                                "startup_ns": startup_ns,
+                                "startup_ms": f"{startup_ns / 1_000_000:.3f}",
+                                "source": "controller_log_event",
+                                "detail": line,
+                            }
+                        )
+
+                rows.append(
+                    {
+                        "role": "worker_container",
+                        "metric": "worker_ready_internal",
+                        "name": worker_name,
+                        "kind": "docker_worker",
+                        "start_ns": "",
+                        "ready_ns": event.get("ts_ns", ""),
+                        "startup_ns": "",
+                        "startup_ms": worker_startup_ms,
+                        "source": "gateway_log_startup_ms",
+                        "detail": line,
+                    }
+                )
+
+        with path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
 
     def write_metadata(self, run_ctx: RunContext, metadata: dict[str, Any]) -> None:
         (run_ctx.directory / "metadata.json").write_text(

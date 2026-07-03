@@ -208,13 +208,20 @@ Startup measurements:
 - bare metal process startup: spawn timestamp to `[OPERATOR_READY]`
 - SGX startup: spawn timestamp to `[OPERATOR_READY]`
 - gateway startup: spawn timestamp to `[GATEWAY_READY]`
-- Docker worker startup: use gateway/container trace events, especially container create to ready
+- Docker usable startup: gateway spawn timestamp to the first `docker worker ready` log line
+- Docker worker startup: parse each gateway `docker worker ready ... startup_ms=...` line
 
 ## CPU And Resource Monitoring
 
 For local deployments:
 
 - Use `psutil` for direct child processes.
+- Write process user/system CPU time plus memory fields:
+  - `rss_bytes`
+  - `vms_bytes`
+  - `num_threads`
+  - process-tree totals: `rss_tree_bytes`, `vms_tree_bytes`, `num_threads_tree`, and `children_count`
+- The process-tree totals matter for wrapper-style deployments such as Gramine.
 - For Docker/Podman mode, monitor the runtime machinery as a whole:
   - gateway container CPU/memory
   - optionally total CPU/memory of all containers matching `dcmb_gateway` and `dcmb-worker-*`
@@ -253,10 +260,11 @@ For each matrix combination:
 11. Stop deployment under test.
 12. Stop servers if this run owns them.
 13. Wait for trace flush.
-14. Copy remote logs/traces back.
-15. Convert all `.bin` traces in the run folder to `.csv`.
-16. Sleep `cooldown_s`.
-17. Append basic run metadata/status to `summary.csv`.
+14. Write `csv/startup.csv` with process-ready and Docker worker-ready startup measurements.
+15. Copy remote logs/traces back.
+16. Convert all `.bin` traces in the run folder to `.csv`.
+17. Sleep `cooldown_s`.
+18. Append basic run metadata/status to `summary.csv`.
 
 Metrics such as errors, saturation, latency breakdowns, and detailed throughput can be derived later from client output and trace CSVs. The controller should mainly preserve raw data reliably.
 
@@ -296,9 +304,18 @@ Start small:
 
 Then add:
 
-1. Direct client-to-server baseline deployment.
+1. Direct client-to-server baseline deployment. Done for local first pass.
 2. Gramine SGX deployment with full-validation and empty-handler manifests. Done for local first pass.
 3. Certserver-side quote verification in the Go certserver. Done with the DCAP cgo verifier path.
-4. Remote SSH wrapper and log copy.
-5. Podman runtime adapter.
-6. CSV merge/duration analysis helpers.
+4. Process memory collection with RSS/VMS/thread fields and process-tree totals. Done for local first pass.
+5. Normal-campaign startup CSV for process readiness, gateway readiness, first Docker worker readiness, and per-worker internal startup. Done for local first pass.
+
+## Deferred Memo
+
+- Remote SSH wrapper and log copy for multi-node experiments.
+- Clock synchronization metadata/checks for cross-node trace correlation.
+- Startup-only microbenchmark script for repeated baremetal, SGX, single-container, and parallel-container startup measurements.
+- Request server rewrite or instrumentation in Go so it can use the same binary trace format.
+- Throughput/resource plotting: offered vs achieved throughput, saturation/errors, CPU and memory over time, and CPU/memory versus offered rate.
+- Podman runtime adapter.
+- CSV merge/duration analysis helpers.

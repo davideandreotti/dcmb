@@ -58,6 +58,7 @@ Log_container.txt
 DC/Middlebox/client.bck
 DC/Middlebox/client
 DC/Middlebox/middlebox
+DC/Middlebox/middlebox_sgxgo
 DC/Middlebox/middlebox_gateway
 DC/Middlebox/cmd/client/client
 DC/Middlebox/cmd/middlebox/middlebox
@@ -65,10 +66,11 @@ DC/Middlebox/cmd/gateway/gateway
 **/generate_dc_tool
 DC/Middlebox/middlebox.manifest.sgx
 DC/Middlebox/middlebox.manifest
+DC/Middlebox/middlebox_sgxgo.manifest
+DC/Middlebox/middlebox_sgxgo.manifest.sgx
 DC/Middlebox/certserver
 DC/Middlebox/sample-benchmarking-code
 DC/Middlebox/middlebox_emptyhandler.sig
 DC/Middlebox/middlebox_emptyhandler.manifest
 DC/Middlebox/middlebox_emptyhandler.manifest.sgx
 DC/Middlebox/middlebox_emptyhandler
-

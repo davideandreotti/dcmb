@@ -6,7 +6,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 CUSTOM_GOROOT="$PROJECT_ROOT/DC/go"
 CUSTOM_GO="$CUSTOM_GOROOT/bin/go"
+SGX_GOROOT="${SGX_GOROOT:-/home/bonsai/go-sgx-mod}"
+SGX_GO="$SGX_GOROOT/bin/go"
 ENCLAVE_KEY="${GRAMINE_ENCLAVE_KEY:-$HOME/.config/gramine/enclave-key.pem}"
+BASE_PATH="$PATH"
 
 if [[ ! -x "$CUSTOM_GO" ]]; then
     echo "Custom Go not found or not executable: $CUSTOM_GO" >&2
@@ -14,9 +17,21 @@ if [[ ! -x "$CUSTOM_GO" ]]; then
     exit 1
 fi
 
-export GOROOT="$CUSTOM_GOROOT"
-export PATH="$CUSTOM_GOROOT/bin:$PATH"
-export GOTOOLCHAIN=local
+if [[ ! -x "$SGX_GO" ]]; then
+    echo "SGX Go not found or not executable: $SGX_GO" >&2
+    echo "Set SGX_GOROOT to the go-sgx-mod copy, or build /home/bonsai/go-sgx-mod first." >&2
+    exit 1
+fi
+
+use_go_toolchain() {
+    local goroot="$1"
+
+    export GOROOT="$goroot"
+    export PATH="$goroot/bin:$BASE_PATH"
+    export GOTOOLCHAIN=local
+}
+
+use_go_toolchain "$CUSTOM_GOROOT"
 
 require_command() {
     local name="$1"
@@ -108,7 +123,15 @@ build_docker_images() {
     echo "[COMPILE] building dcmiddlebox-worker:baseline"
     docker build \
         -f "$SCRIPT_DIR/dcmiddlebox.Dockerfile" \
+        --build-arg MIDDLEBOX_BINARY=middlebox \
         -t dcmiddlebox-worker:baseline \
+        "$PROJECT_ROOT"
+
+    echo "[COMPILE] building dcmiddlebox-worker:emptyhandler"
+    docker build \
+        -f "$SCRIPT_DIR/dcmiddlebox.Dockerfile" \
+        --build-arg MIDDLEBOX_BINARY=middlebox_emptyhandler \
+        -t dcmiddlebox-worker:emptyhandler \
         "$PROJECT_ROOT"
 
     echo "[COMPILE] building dcmb_gateway:docker"
@@ -117,17 +140,24 @@ build_docker_images() {
         -t dcmb_gateway:docker \
         "$PROJECT_ROOT"
 
-    echo "[COMPILE] OK: docker images dcmiddlebox-worker:baseline dcmb_gateway:docker"
+    echo "[COMPILE] OK: docker images dcmiddlebox-worker:baseline dcmiddlebox-worker:emptyhandler dcmb_gateway:docker"
 }
 
 (
     cd "$SCRIPT_DIR"
+    use_go_toolchain "$CUSTOM_GOROOT"
     build "client" "cmd/client" "$SCRIPT_DIR/client" "${common_build_args[@]}"
     build "certserver" "cmd/certserver" "$SCRIPT_DIR/certserver" "${certserver_build_args[@]}"
     build "middlebox" "cmd/middlebox" "$SCRIPT_DIR/middlebox" "${middlebox_build_args[@]}"
     build "middlebox_emptyhandler" "cmd/middlebox" "$SCRIPT_DIR/middlebox_emptyhandler" "${middlebox_empty_build_args[@]}"
     build "middlebox_gateway" "cmd/gateway" "$SCRIPT_DIR/middlebox_gateway" "${common_build_args[@]}"
+
+    use_go_toolchain "$SGX_GOROOT"
+    build "middlebox_sgxgo" "cmd/middlebox" "$SCRIPT_DIR/middlebox_sgxgo" "${middlebox_build_args[@]}"
+
+    use_go_toolchain "$CUSTOM_GOROOT"
     build_gramine_manifest "middlebox"
+    build_gramine_manifest "middlebox_sgxgo"
     build_gramine_manifest "middlebox_emptyhandler"
     build_docker_images
 )
