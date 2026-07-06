@@ -517,7 +517,11 @@ func main() {
 	if err := benchtrace.Start(*tracePathFlag, *traceBufferFlag, *traceDropFlag); err != nil {
 		log.Fatalf("trace start: %v", err)
 	}
-	defer benchtrace.Stop()
+	defer func() {
+		fmt.Fprintln(os.Stderr, "[OPERATOR] trace stop start")
+		benchtrace.Stop()
+		fmt.Fprintln(os.Stderr, "[OPERATOR] trace stop done")
+	}()
 
 	reuseDC = *reuseDCFlag
 	minimalLogs = *minimalLogsFlag
@@ -727,6 +731,11 @@ func main() {
 		TLSConfig: tlsConfig,
 	}
 
+	ln, err := net.Listen("tcp", operatorTLSAddr)
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	info(fmt.Sprintf("[OPERATOR] %s mode=%s listening on %s", operatorID, mode, operatorTLSAddr))
 	fmt.Fprintf(os.Stderr, "[OPERATOR_READY] listening=%s mode=%s id=%s\n", operatorTLSAddr, mode, operatorID)
 
@@ -735,7 +744,7 @@ func main() {
 
 	go func() {
 		<-shutdownCtx.Done()
-		info("[OPERATOR] shutdown signal received")
+		fmt.Fprintln(os.Stderr, "[OPERATOR] shutdown signal received")
 
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
@@ -745,7 +754,7 @@ func main() {
 		}
 	}()
 
-	if err := srv.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	if err := srv.ServeTLS(ln, "", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
 }

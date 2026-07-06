@@ -22,6 +22,9 @@ passthrough = true
 uri = "file:/usr/local/lib/x86_64-linux-gnu/gramine/libsysdb.so"
 sha256 = "64678d5b24c9b16cb35e9d4b3380ad20b3bc9911adc0f25cd52e15336ad3228b"
 
+[sys]
+enable_sigterm_injection = true
+
 [fs]
 mounts = [
     { path = "/lib", uri = "file:/usr/local/lib/x86_64-linux-gnu/gramine/runtime/glibc" },
@@ -54,7 +57,7 @@ use_exinfo = false
 
 [[sgx.trusted_files]]
 uri = "file:middlebox"
-sha256 = "f72d8474f88688516bf73e75108c0388b70fc581526390fddfbdbe180c4e7e9a"
+sha256 = "d6a87b1ffb80d87a64d0cac81fe0a5cabaa31fc89bbfffaf98218205ebc13dc5"
 
 [[sgx.trusted_files]]
 uri = "file:schemas/init-request-schema.json"

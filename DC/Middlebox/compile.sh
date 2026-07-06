@@ -140,7 +140,13 @@ build_docker_images() {
         -t dcmb_gateway:docker \
         "$PROJECT_ROOT"
 
-    echo "[COMPILE] OK: docker images dcmiddlebox-worker:baseline dcmiddlebox-worker:emptyhandler dcmb_gateway:docker"
+    echo "[COMPILE] building dcmiddlebox-worker:sgxgo"
+    docker build \
+        -f "$SCRIPT_DIR/Dockerfile.worker_sgxgo" \
+        -t dcmiddlebox-worker:sgxgo \
+        "$PROJECT_ROOT"
+
+    echo "[COMPILE] OK: docker images dcmiddlebox-worker:baseline dcmiddlebox-worker:emptyhandler dcmiddlebox-worker:sgxgo dcmb_gateway:docker"
 }
 
 (

@@ -58,6 +58,12 @@ type dockerBackend struct {
 	workerTraceEnabled          bool
 	workerTraceHostDir          string
 	workerTraceContainerDir     string
+	workerSGXEnabled            bool
+	workerSGXEnclaveDevice      string
+	workerSGXProvisionDevice    string
+	workerAESMDir               string
+	workerEmitQuote             string
+	workerSIGINTTimeout         time.Duration
 
 	minReady       int
 	scaleUpBy      int
@@ -119,9 +125,16 @@ type dockerContainerCreateRequest struct {
 }
 
 type dockerHostConfig struct {
-	NetworkMode string   `json:"NetworkMode,omitempty"`
-	Binds       []string `json:"Binds,omitempty"`
-	ExtraHosts  []string `json:"ExtraHosts,omitempty"`
+	NetworkMode string                `json:"NetworkMode,omitempty"`
+	Binds       []string              `json:"Binds,omitempty"`
+	ExtraHosts  []string              `json:"ExtraHosts,omitempty"`
+	Devices     []dockerDeviceMapping `json:"Devices,omitempty"`
+}
+
+type dockerDeviceMapping struct {
+	PathOnHost        string `json:"PathOnHost,omitempty"`
+	PathInContainer   string `json:"PathInContainer,omitempty"`
+	CgroupPermissions string `json:"CgroupPermissions,omitempty"`
 }
 
 type dockerNetworkingConfig struct {
@@ -185,6 +198,12 @@ func newDockerBackendFromEnv() (*dockerBackend, error) {
 		workerTraceEnabled:          getEnvBool("DOCKER_WORKER_TRACE_ENABLED", false),
 		workerTraceHostDir:          strings.TrimSpace(getEnv("DOCKER_WORKER_TRACE_HOST_DIR", "/tmp/dcmb-traces")),
 		workerTraceContainerDir:     strings.TrimSpace(getEnv("DOCKER_WORKER_TRACE_CONTAINER_DIR", "/trace")),
+		workerSGXEnabled:            getEnvBool("DOCKER_WORKER_SGX_ENABLED", false),
+		workerSGXEnclaveDevice:      strings.TrimSpace(getEnv("DOCKER_WORKER_SGX_ENCLAVE_DEVICE", "/dev/sgx_enclave")),
+		workerSGXProvisionDevice:    strings.TrimSpace(getEnv("DOCKER_WORKER_SGX_PROVISION_DEVICE", "/dev/sgx_provision")),
+		workerAESMDir:               strings.TrimSpace(getEnv("DOCKER_WORKER_AESM_DIR", "/var/run/aesmd")),
+		workerEmitQuote:             strings.TrimSpace(os.Getenv("DOCKER_WORKER_EMIT_QUOTE")),
+		workerSIGINTTimeout:         envDurationMs("DOCKER_WORKER_SIGINT_TIMEOUT_MS", 250),
 
 		minReady:       minReady,
 		scaleUpBy:      scaleUpBy,
@@ -465,6 +484,9 @@ func (d *dockerBackend) createAndWaitReady() (*dockerWorker, error) {
 	if d.workerTraceEnabled && d.workerTraceHostDir != "" && d.workerTraceContainerDir != "" {
 		req.HostConfig.Binds = append(req.HostConfig.Binds, d.workerTraceHostDir+":"+d.workerTraceContainerDir)
 	}
+	if d.workerSGXEnabled {
+		d.addSGXHostConfig(&req.HostConfig)
+	}
 	if d.serverHost != "" {
 		req.HostConfig.ExtraHosts = append(req.HostConfig.ExtraHosts, "server:"+d.serverHost)
 	}
@@ -517,7 +539,30 @@ func (d *dockerBackend) workerEnv() []string {
 	if d.operatorCertURL != "" {
 		env = append(env, "OPERATOR_CERT_URL="+d.operatorCertURL)
 	}
+	if d.workerEmitQuote != "" {
+		env = append(env, "MBX_EMIT_QUOTE="+d.workerEmitQuote)
+	}
 	return env
+}
+
+func (d *dockerBackend) addSGXHostConfig(hostConfig *dockerHostConfig) {
+	addDevice := func(path string) {
+		if path == "" {
+			return
+		}
+		hostConfig.Devices = append(hostConfig.Devices, dockerDeviceMapping{
+			PathOnHost:        path,
+			PathInContainer:   path,
+			CgroupPermissions: "rwm",
+		})
+	}
+
+	addDevice(d.workerSGXEnclaveDevice)
+	addDevice(d.workerSGXProvisionDevice)
+
+	if d.workerAESMDir != "" {
+		hostConfig.Binds = append(hostConfig.Binds, d.workerAESMDir+":"+d.workerAESMDir)
+	}
 }
 
 func (d *dockerBackend) waitContainerIP(containerID string) (string, error) {
@@ -748,14 +793,23 @@ func (d *dockerBackend) removeContainerID(containerID string, reason string) {
 
 func (d *dockerBackend) removeContainerIDContext(ctx context.Context, containerID string, reason string) {
 	benchtrace.Mark(benchtrace.GatewayContainerRemove, containerID, 0)
-	stopPath := "/containers/" + containerID + "/stop?t=1"
-	stopErr := d.api.do(ctx, http.MethodPost, stopPath, nil, nil)
-	if stopErr != nil && !errors.Is(stopErr, errDockerNotFound) && !isDockerAPIStatus(stopErr, http.StatusNotModified) {
-		info("[GATEWAY] docker graceful stop failed reason=" + reason + " id=" + containerID + " err=" + stopErr.Error())
+	forceRemove := false
+	if d.workerSGXEnabled {
+		forceRemove = !d.interruptContainerContext(ctx, containerID, reason)
+	} else {
+		stopPath := "/containers/" + containerID + "/stop?t=1"
+		stopErr := d.api.do(ctx, http.MethodPost, stopPath, nil, nil)
+		if stopErr != nil && !errors.Is(stopErr, errDockerNotFound) && !isDockerAPIStatus(stopErr, http.StatusNotModified) {
+			info("[GATEWAY] docker graceful stop failed reason=" + reason + " id=" + containerID + " err=" + stopErr.Error())
+		}
 	}
 
-	err := d.api.do(ctx, http.MethodDelete, "/containers/"+containerID+"?v=true", nil, nil)
-	if err != nil && !errors.Is(err, errDockerNotFound) {
+	removePath := "/containers/" + containerID + "?v=true"
+	if forceRemove {
+		removePath = "/containers/" + containerID + "?force=true&v=true"
+	}
+	err := d.api.do(ctx, http.MethodDelete, removePath, nil, nil)
+	if err != nil && !errors.Is(err, errDockerNotFound) && !forceRemove {
 		info("[GATEWAY] docker graceful remove failed reason=" + reason + " id=" + containerID + " err=" + err.Error())
 		err = d.api.do(ctx, http.MethodDelete, "/containers/"+containerID+"?force=true&v=true", nil, nil)
 	}
@@ -766,4 +820,31 @@ func (d *dockerBackend) removeContainerIDContext(ctx context.Context, containerI
 		return
 	}
 	benchtrace.Mark(benchtrace.GatewayContainerRemoved, containerID, 0)
+}
+
+func (d *dockerBackend) interruptContainerContext(ctx context.Context, containerID string, reason string) bool {
+	killPath := "/containers/" + containerID + "/kill?signal=SIGINT"
+	err := d.api.do(ctx, http.MethodPost, killPath, nil, nil)
+	if errors.Is(err, errDockerNotFound) || isDockerAPIStatus(err, http.StatusNotModified) {
+		return true
+	}
+	if err != nil && !errors.Is(err, errDockerNotFound) && !isDockerAPIStatus(err, http.StatusNotModified) {
+		info("[GATEWAY] docker sigint failed reason=" + reason + " id=" + containerID + " err=" + err.Error())
+		return false
+	}
+
+	deadline := time.Now().Add(d.workerSIGINTTimeout)
+	for time.Now().Before(deadline) {
+		running, statusErr := d.containerRunning(containerID)
+		if errors.Is(statusErr, errDockerNotFound) || (statusErr == nil && !running) {
+			return true
+		}
+		if statusErr != nil {
+			info("[GATEWAY] docker sigint status check failed reason=" + reason + " id=" + containerID + " err=" + statusErr.Error())
+			return false
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	info("[GATEWAY] docker sigint timeout reason=" + reason + " id=" + containerID + " timeout=" + d.workerSIGINTTimeout.String())
+	return false
 }

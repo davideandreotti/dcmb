@@ -310,6 +310,133 @@ Then add:
 4. Process memory collection with RSS/VMS/thread fields and process-tree totals. Done for local first pass.
 5. Normal-campaign startup CSV for process readiness, gateway readiness, first Docker worker readiness, and per-worker internal startup. Done for local first pass.
 
+## Next: Docker Workers Running SGX-Go Middleboxes
+
+Add a new Docker gateway deployment strategy where every worker container runs
+`middlebox_sgxgo` inside Gramine SGX. This is a whole-gateway mode: a given
+gateway run uses either plain worker containers or SGX-Go worker containers, not
+a mix of both.
+
+### Current State
+
+- `dcmiddlebox-worker:sgxgo` exists as a dedicated worker image.
+- The image uses `gramineproject/gramine:latest`.
+- The image copies `middlebox_sgxgo`, schemas, certs, and `jwks.dat`.
+- The image generates and signs its Gramine manifest during Docker build.
+- The container manifest keeps `sgx.enclave_size = "64M"`.
+- A manual container run works when the host SGX devices and AESM socket are
+  mounted.
+- The gateway still uses TCP readiness on worker port `8443`, which is
+  compatible with the SGX-Go worker.
+
+### Gateway Docker Backend Changes
+
+Extend the gateway's minimal Docker Engine API structs. Docker Engine already
+supports device mappings through `HostConfig.Devices`; the current local Go
+struct simply does not expose that field yet.
+
+Add:
+
+```go
+type dockerDeviceMapping struct {
+    PathOnHost        string `json:"PathOnHost,omitempty"`
+    PathInContainer   string `json:"PathInContainer,omitempty"`
+    CgroupPermissions string `json:"CgroupPermissions,omitempty"`
+}
+```
+
+and add to `dockerHostConfig`:
+
+```go
+Devices []dockerDeviceMapping `json:"Devices,omitempty"`
+```
+
+Add Docker backend config fields read from env:
+
+- `DOCKER_WORKER_SGX_ENABLED`, default `false`
+- `DOCKER_WORKER_SGX_ENCLAVE_DEVICE`, default `/dev/sgx_enclave`
+- `DOCKER_WORKER_SGX_PROVISION_DEVICE`, default `/dev/sgx_provision`
+- `DOCKER_WORKER_AESM_DIR`, default `/var/run/aesmd`
+- `DOCKER_WORKER_EMIT_QUOTE`, default empty/`0`
+
+When `DOCKER_WORKER_SGX_ENABLED=true`, every worker created by that gateway run
+should receive:
+
+- SGX device mappings:
+  - host `/dev/sgx_enclave` to container `/dev/sgx_enclave`
+  - host `/dev/sgx_provision` to container `/dev/sgx_provision`
+- AESM bind mount:
+  - `/var/run/aesmd:/var/run/aesmd`
+
+The device paths and AESM directory remain configurable for machines with
+different host layouts. If a configured SGX device path is empty, skip that
+device mapping rather than failing during config parsing; Docker will still fail
+at container create/start if a non-empty configured path does not exist.
+
+Add worker env forwarding:
+
+```text
+MBX_EMIT_QUOTE=<DOCKER_WORKER_EMIT_QUOTE>
+```
+
+only when the value is explicitly configured or useful for the SGX worker. This
+allows experiments with quote emission enabled or disabled on different
+machines.
+
+Keep the existing 5s worker readiness timeout for now.
+
+### Benchmark Controller Changes
+
+For `kind: docker_gateway`, allow YAML keys:
+
+```yaml
+worker_sgx_enabled: true
+worker_emit_quote: "1"
+worker_sgx_enclave_device: /dev/sgx_enclave
+worker_sgx_provision_device: /dev/sgx_provision
+worker_aesm_dir: /var/run/aesmd
+```
+
+Translate these into gateway container env vars:
+
+```text
+DOCKER_WORKER_SGX_ENABLED=true
+DOCKER_WORKER_EMIT_QUOTE=1
+DOCKER_WORKER_SGX_ENCLAVE_DEVICE=/dev/sgx_enclave
+DOCKER_WORKER_SGX_PROVISION_DEVICE=/dev/sgx_provision
+DOCKER_WORKER_AESM_DIR=/var/run/aesmd
+```
+
+The deployment entry should select the SGX worker image explicitly:
+
+```yaml
+- name: docker_sgxgo_quote
+  kind: docker_gateway
+  worker_image: dcmiddlebox-worker:sgxgo
+  worker_sgx_enabled: true
+  worker_emit_quote: "1"
+  worker_reuse_dc: false
+  min_ready: 10
+  scale_up_by: 10
+  container_stats_scope: all
+```
+
+A no-quote variant can be expressed by setting `worker_emit_quote: "0"`.
+
+### Validation Steps
+
+1. Rebuild the gateway after Docker backend changes.
+2. Start the gateway manually with:
+   - `DOCKER_WORKER_IMAGE=dcmiddlebox-worker:sgxgo`
+   - `DOCKER_WORKER_SGX_ENABLED=true`
+   - `DOCKER_WORKER_EMIT_QUOTE=1` or `0`
+3. Confirm gateway logs show `docker worker ready ... startup_ms=...`.
+4. Send one client request through `https://localhost:9443/function/init`.
+5. Confirm certserver quote verification occurs only when
+   `DOCKER_WORKER_EMIT_QUOTE=1`.
+6. Confirm gateway shutdown removes SGX worker containers; shutdown may still be
+   noisy because Gramine worker containers do not always terminate gracefully.
+
 ## Deferred Memo
 
 - Remote SSH wrapper and log copy for multi-node experiments.

@@ -145,6 +145,18 @@ class ManagedProcess:
             raise RuntimeError(f"{self.role} exited before readiness; returncode={self.proc.returncode}")
         raise TimeoutError(f"{self.role} did not print readiness within {timeout_s}s")
 
+    def wait_event(self, pattern: str, timeout_s: float) -> dict[str, Any]:
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            with self._event_lock:
+                for event in self.events:
+                    if event.get("pattern") == pattern:
+                        return event
+            if self.proc and self.proc.poll() is not None:
+                raise RuntimeError(f"{self.role} exited before event {pattern!r}; returncode={self.proc.returncode}")
+            time.sleep(0.05)
+        raise TimeoutError(f"{self.role} did not print event {pattern!r} within {timeout_s}s")
+
     def poll(self) -> int | None:
         if self.proc is None:
             return None
@@ -158,12 +170,12 @@ class ManagedProcess:
         finally:
             self.join_readers()
 
-    def stop(self, grace_s: float = 5.0) -> int | None:
+    def stop(self, grace_s: float = 5.0, first_signal: signal.Signals = signal.SIGINT) -> int | None:
         if self.proc is None:
             return None
         try:
             if self.proc.poll() is None:
-                self._signal_group(signal.SIGINT)
+                self._signal_group(first_signal)
                 try:
                     return self.proc.wait(timeout=grace_s)
                 except subprocess.TimeoutExpired:
@@ -502,6 +514,10 @@ class Deployment:
     def start(self) -> ManagedProcess | None:
         raise NotImplementedError
 
+    def wait_ready(self, timeout_s: float) -> None:
+        if self.proc:
+            self.proc.wait_ready(timeout_s)
+
     def stop(self) -> None:
         if self.proc:
             self.proc.stop(grace_s=8)
@@ -594,6 +610,10 @@ class GramineSGXDeployment(BaremetalDeployment):
         )
         return self.proc
 
+    def stop(self) -> None:
+        if self.proc:
+            self.proc.stop(grace_s=8, first_signal=signal.SIGTERM)
+
 
 class DockerGatewayDeployment(Deployment):
     def cleanup_before(self) -> None:
@@ -615,6 +635,7 @@ class DockerGatewayDeployment(Deployment):
         scale_up_by = str(self.cfg.get("scale_up_by", min_ready))
         worker_trace_enabled = str(bool(self.cfg.get("worker_trace_enabled", False))).lower()
         worker_reuse_dc = str(bool(self.cfg.get("worker_reuse_dc", True))).lower()
+        worker_sgx_enabled = bool(self.cfg.get("worker_sgx_enabled", False))
         traces_host = str(self.run.traces_dir.resolve())
 
         cmd = [
@@ -655,13 +676,24 @@ class DockerGatewayDeployment(Deployment):
             "DOCKER_WORKER_TRACE_CONTAINER_DIR=/trace",
             "-e",
             f"DOCKER_API_TIMEOUT_MS={self.cfg.get('docker_api_timeout_ms', 5000)}",
+        ]
+
+        if worker_sgx_enabled:
+            cmd.extend(["-e", "DOCKER_WORKER_SGX_ENABLED=true"])
+            cmd.extend(["-e", f"DOCKER_WORKER_SGX_ENCLAVE_DEVICE={self.cfg.get('worker_sgx_enclave_device', '/dev/sgx_enclave')}"])
+            cmd.extend(["-e", f"DOCKER_WORKER_SGX_PROVISION_DEVICE={self.cfg.get('worker_sgx_provision_device', '/dev/sgx_provision')}"])
+            cmd.extend(["-e", f"DOCKER_WORKER_AESM_DIR={self.cfg.get('worker_aesm_dir', '/var/run/aesmd')}"])
+        if "worker_emit_quote" in self.cfg:
+            cmd.extend(["-e", f"DOCKER_WORKER_EMIT_QUOTE={self.cfg.get('worker_emit_quote')}"])
+
+        cmd.extend([
             image,
             "-trace",
             "/trace/gateway.bin",
             "-trace-buffer-events",
             str(self.controller.trace_buffer_events),
             f"-trace-drop-on-full={str(self.controller.trace_drop_on_full).lower()}",
-        ]
+        ])
 
         self.proc = self.controller.spawn(
             role="gateway",
@@ -683,6 +715,13 @@ class DockerGatewayDeployment(Deployment):
         ids = list_container_ids(runtime, worker_prefix)
         if ids:
             run_quiet([runtime, "rm", "-f", *ids])
+
+    def wait_ready(self, timeout_s: float) -> None:
+        super().wait_ready(timeout_s)
+        min_ready = int(self.cfg.get("min_ready", 1))
+        if min_ready > 0 and self.proc:
+            event = self.proc.wait_event("docker worker ready", timeout_s)
+            print(f"[CTRL] first docker worker ready: {event.get('line', '')}")
 
     def client_url(self) -> str:
         host = self.controller.hosts["middlebox"].get("ip", "127.0.0.1")
@@ -904,7 +943,7 @@ class Controller:
             deployment_proc = deployment.start()
             if deployment_proc:
                 managed.append((deployment.kind, deployment_proc))
-                deployment_proc.wait_ready(self.readiness_timeout_s)
+                deployment.wait_ready(self.readiness_timeout_s)
 
             if self.warmup_s > 0:
                 time.sleep(self.warmup_s)

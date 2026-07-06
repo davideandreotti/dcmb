@@ -1,8 +1,8 @@
 campaign:
-  name: huge_comparison_full
+  name: all_deployments_rate10_15s
   output_root: experiments
   runs: 1
-  duration_s: 30
+  duration_s: 15
   warmup_s: 1
   cooldown_s: 2
   readiness_timeout_s: 30
@@ -50,7 +50,7 @@ client:
 client_matrix:
   modes: [fresh, persistent]
   clients: [1]
-  rates: [1, 5, 10, 50, 100, 500, 1000]
+  rates: [10]
 
 deployments:
   - name: direct
