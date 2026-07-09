@@ -27,6 +27,7 @@ import (
 	"syscall"
 	"time"
 
+	"dc/middlebox/internal/ticketidentity"
 	benchtrace "dc/middlebox/internal/trace"
 )
 
@@ -80,12 +81,82 @@ type operatorState struct {
 	exitAfterRequest bool
 }
 
+type ticketSessionStore struct {
+	key        []byte
+	operatorID string
+	issued     atomic.Bool
+
+	mu       sync.RWMutex
+	identity []byte
+	state    []byte
+}
+
 var (
 	certCache         = make(map[string]*tls.Certificate)
 	certMu            sync.RWMutex
 	delegationFetchMu sync.Mutex
 	firstDCDiscarded  atomic.Bool
 )
+
+func newTicketSessionStore(identityKey string, operatorID string) *ticketSessionStore {
+	identityKey = strings.TrimSpace(identityKey)
+	if identityKey == "" {
+		return nil
+	}
+	return &ticketSessionStore{
+		key:        []byte(identityKey),
+		operatorID: operatorID,
+	}
+}
+
+func (s *ticketSessionStore) wrapSession(cs tls.ConnectionState, ss *tls.SessionState) ([]byte, error) {
+	serviceID := cs.ServerName
+	if strings.TrimSpace(serviceID) == "" {
+		serviceID = expectedSNI
+	}
+
+	identity, err := ticketidentity.Derive(s.key, s.operatorID, serviceID)
+	if err != nil {
+		return nil, err
+	}
+	state, err := ss.Bytes()
+	if err != nil {
+		return nil, err
+	}
+
+	s.mu.Lock()
+	s.identity = cloneBytes(identity)
+	s.state = cloneBytes(state)
+	s.mu.Unlock()
+	s.issued.Store(true)
+
+	return identity, nil
+}
+
+func (s *ticketSessionStore) unwrapSession(identity []byte, _ tls.ConnectionState) (*tls.SessionState, error) {
+	s.mu.RLock()
+	knownIdentity := cloneBytes(s.identity)
+	state := cloneBytes(s.state)
+	s.mu.RUnlock()
+
+	if len(knownIdentity) == 0 || !ticketidentity.Equal(identity, knownIdentity) {
+		return nil, nil
+	}
+	return tls.ParseSessionState(state)
+}
+
+func (s *ticketSessionStore) ticketIssued() bool {
+	return s != nil && s.issued.Load()
+}
+
+func cloneBytes(in []byte) []byte {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]byte, len(in))
+	copy(out, in)
+	return out
+}
 
 func cacheFetchedDelegation(sni string, cert *tls.Certificate) bool {
 	// Comment out this block to keep the first fetched delegated credential.
@@ -535,6 +606,7 @@ func main() {
 	mode := strings.ToLower(*operatorModeFlag)
 	operatorID := *operatorIDFlag
 	defaultSNI := *defaultSNIFlag
+	ticketStore := newTicketSessionStore(os.Getenv("DCMB_TICKET_IDENTITY_KEY"), operatorID)
 
 	st := &operatorState{
 		id:               operatorID,
@@ -687,12 +759,14 @@ func main() {
 			st.ready.Store(false)
 		}
 
-		if st.exitAfterRequest {
+		if st.exitAfterRequest && !ticketStore.ticketIssued() {
 			info("[OPERATOR] single-use mode: exiting after request")
 			go func() {
 				time.Sleep(50 * time.Millisecond)
 				os.Exit(0)
 			}()
+		} else if st.exitAfterRequest {
+			info("[OPERATOR] ticket issued: staying warm for resumption")
 		}
 	})
 
@@ -723,6 +797,11 @@ func main() {
 			benchtrace.Mark(benchtrace.MiddleboxTLSGetCertDone, sni, 0)
 			return cert, nil
 		},
+	}
+	if ticketStore != nil {
+		tlsConfig.WrapSession = ticketStore.wrapSession
+		tlsConfig.UnwrapSession = ticketStore.unwrapSession
+		info("[OPERATOR] deterministic TLS ticket identity enabled")
 	}
 
 	srv := &http.Server{

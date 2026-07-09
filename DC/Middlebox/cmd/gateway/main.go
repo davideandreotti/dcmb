@@ -23,6 +23,8 @@ import (
 	"syscall"
 	"time"
 
+	"dc/middlebox/internal/ticketidentity"
+	"dc/middlebox/internal/tlshello"
 	benchtrace "dc/middlebox/internal/trace"
 )
 
@@ -33,6 +35,8 @@ const (
 	defaultClientQueueSize      = 100
 	defaultClientQueueTimeoutMs = 5000
 	defaultClientQueueRetryMs   = 1
+	clientHelloPeekTimeout      = 2 * time.Second
+	maxClientHelloPeekBytes     = 64 * 1024
 )
 
 type gatewayState struct {
@@ -42,6 +46,7 @@ type gatewayState struct {
 	dropped        atomic.Int64
 	lastBackend    atomic.Value
 	lastResolution atomic.Value
+	affinity       *ticketAffinity
 }
 
 type backendPool struct {
@@ -51,6 +56,7 @@ type backendPool struct {
 	policy   string
 	lastGood string
 	leased   map[string]struct{}
+	bound    map[string]struct{}
 	k8s      *kubernetesBackend
 	docker   *dockerBackend
 }
@@ -70,6 +76,15 @@ type queuedClient struct {
 	id       string
 	conn     net.Conn
 	deadline time.Time
+	preface  []byte
+	hello    *tlshello.Info
+}
+
+type ticketAffinity struct {
+	key []byte
+
+	mu     sync.RWMutex
+	routes map[string]backendTarget
 }
 
 type kubernetesBackend struct {
@@ -138,6 +153,110 @@ func getEnvBool(key string, fallback bool) bool {
 	default:
 		return fallback
 	}
+}
+
+func newTicketAffinityFromEnv() *ticketAffinity {
+	key := strings.TrimSpace(os.Getenv("DCMB_TICKET_IDENTITY_KEY"))
+	if key == "" {
+		return nil
+	}
+	return &ticketAffinity{
+		key:    []byte(key),
+		routes: make(map[string]backendTarget),
+	}
+}
+
+func (a *ticketAffinity) lookup(hello *tlshello.Info) (backendTarget, bool) {
+	if a == nil || hello == nil {
+		return backendTarget{}, false
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	for _, identity := range hello.PSKIdentities {
+		if !ticketidentity.IsIdentity(identity) {
+			continue
+		}
+		backend, ok := a.routes[string(identity)]
+		if ok {
+			return backend, true
+		}
+	}
+	return backendTarget{}, false
+}
+
+func (a *ticketAffinity) bind(backend backendTarget, serverName string) error {
+	if a == nil || backend.name == "" || strings.TrimSpace(serverName) == "" {
+		return nil
+	}
+	identity, err := ticketidentity.Derive(a.key, backend.name, serverName)
+	if err != nil {
+		return err
+	}
+
+	a.mu.Lock()
+	a.routes[string(identity)] = backend
+	a.mu.Unlock()
+	return nil
+}
+
+func (a *ticketAffinity) forgetBackend(name string) {
+	if a == nil || name == "" {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for identity, backend := range a.routes {
+		if backend.name == name {
+			delete(a.routes, identity)
+		}
+	}
+}
+
+func peekClientHello(conn net.Conn) ([]byte, *tlshello.Info, error) {
+	if err := conn.SetReadDeadline(time.Now().Add(clientHelloPeekTimeout)); err != nil {
+		return nil, nil, err
+	}
+	defer conn.SetReadDeadline(time.Time{})
+
+	var raw []byte
+	for len(raw) < maxClientHelloPeekBytes {
+		if err := readExactly(conn, &raw, 5); err != nil {
+			return raw, nil, err
+		}
+		recordLen := int(raw[len(raw)-2])<<8 | int(raw[len(raw)-1])
+		if recordLen < 0 || len(raw)+recordLen > maxClientHelloPeekBytes {
+			return raw, nil, errors.New("TLS ClientHello exceeds peek limit")
+		}
+		if err := readExactly(conn, &raw, recordLen); err != nil {
+			return raw, nil, err
+		}
+
+		hello, err := tlshello.Parse(raw)
+		if err == nil {
+			return raw, hello, nil
+		}
+		if !errors.Is(err, tlshello.ErrIncomplete) {
+			return raw, nil, err
+		}
+	}
+	return raw, nil, errors.New("TLS ClientHello exceeds peek limit")
+}
+
+func readExactly(conn net.Conn, dst *[]byte, n int) error {
+	buf := make([]byte, n)
+	read := 0
+	for read < n {
+		count, err := conn.Read(buf[read:])
+		if count > 0 {
+			read += count
+		}
+		if err != nil {
+			*dst = append(*dst, buf[:read]...)
+			return err
+		}
+	}
+	*dst = append(*dst, buf...)
+	return nil
 }
 
 func newClientQueueConfigFromEnv(noReadyWaitSeconds int, noReadyRetryMs int) clientQueueConfig {
@@ -209,11 +328,15 @@ func newKubernetesBackendFromEnv() (*kubernetesBackend, error) {
 	if apiTimeout <= 0 {
 		apiTimeout = 200 * time.Millisecond
 	}
+	deleteAfterUseDefault := true
+	if strings.TrimSpace(os.Getenv("DCMB_TICKET_IDENTITY_KEY")) != "" {
+		deleteAfterUseDefault = false
+	}
 
 	return &kubernetesBackend{
 		namespace:      namespace,
 		labelSelector:  labelSelector,
-		deleteAfterUse: getEnvBool("KUBERNETES_DELETE_AFTER_USE", true),
+		deleteAfterUse: getEnvBool("KUBERNETES_DELETE_AFTER_USE", deleteAfterUseDefault),
 		apiServer:      "https://" + net.JoinHostPort(host, port),
 		apiTimeout:     apiTimeout,
 		httpClient:     &http.Client{Timeout: apiTimeout, Transport: transport},
@@ -371,11 +494,14 @@ func (p *backendPool) pickReadyBackend() (backendTarget, error) {
 	}
 	p.mu.Unlock()
 
-	if containsIP(ips, lastGood) && isReady(readyClient, lastGood) {
+	if containsIP(ips, lastGood) && !p.isBound(lastGood) && isReady(readyClient, lastGood) {
 		return backendTarget{name: lastGood, ip: lastGood}, nil
 	}
 
 	for _, ip := range order {
+		if p.isBound(ip) {
+			continue
+		}
 		if isReady(readyClient, ip) {
 			p.mu.Lock()
 			p.lastGood = ip
@@ -407,6 +533,11 @@ func (p *backendPool) pickReadyKubernetesBackend() (backendTarget, error) {
 			delete(p.leased, leasedName)
 		}
 	}
+	for boundName := range p.bound {
+		if _, stillReady := readyByName[boundName]; !stillReady {
+			delete(p.bound, boundName)
+		}
+	}
 
 	order := make([]backendTarget, len(backends))
 	copy(order, backends)
@@ -424,6 +555,9 @@ func (p *backendPool) pickReadyKubernetesBackend() (backendTarget, error) {
 		for _, backend := range order {
 			if backend.name == p.lastGood {
 				if _, leased := p.leased[backend.name]; !leased {
+					if _, bound := p.bound[backend.name]; bound {
+						break
+					}
 					p.leased[backend.name] = struct{}{}
 					return backend, nil
 				}
@@ -436,12 +570,35 @@ func (p *backendPool) pickReadyKubernetesBackend() (backendTarget, error) {
 		if _, leased := p.leased[backend.name]; leased {
 			continue
 		}
+		if _, bound := p.bound[backend.name]; bound {
+			continue
+		}
 		p.lastGood = backend.name
 		p.leased[backend.name] = struct{}{}
 		return backend, nil
 	}
 
 	return backendTarget{}, errors.New("no ready operator available (all leased)")
+}
+
+func (p *backendPool) isBound(name string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	_, ok := p.bound[name]
+	return ok
+}
+
+func (p *backendPool) bindBackend(name string) {
+	if name == "" {
+		return
+	}
+	if p.docker != nil {
+		p.docker.bindBackend(name)
+		return
+	}
+	p.mu.Lock()
+	p.bound[name] = struct{}{}
+	p.mu.Unlock()
 }
 
 func (p *backendPool) releaseLease(name string) {
@@ -493,6 +650,19 @@ func pickBackendWithPolicy(pool *backendPool, policy string, waitSeconds int, re
 	return backendTarget{}, err
 }
 
+func pickBackendForClient(pool *backendPool, affinity *ticketAffinity, hello *tlshello.Info, policy string, waitSeconds int, retryMs int) (backendTarget, bool, error) {
+	if backend, ok := affinity.lookup(hello); ok {
+		return backend, true, nil
+	}
+
+	backend, err := pickBackendWithPolicy(pool, policy, waitSeconds, retryMs)
+	if err != nil {
+		return backendTarget{}, false, err
+	}
+	bindTicketBackend(pool, affinity, backend, hello)
+	return backend, false, nil
+}
+
 func pickBackendUntil(ctx context.Context, pool *backendPool, deadline time.Time, retry time.Duration) (backendTarget, error) {
 	var lastErr error
 	for {
@@ -524,10 +694,36 @@ func pickBackendUntil(ctx context.Context, pool *backendPool, deadline time.Time
 	}
 }
 
-func handleClientConn(connID string, c net.Conn, pool *backendPool, st *gatewayState, noReadyPolicy string, noReadyWaitSeconds int, noReadyRetryMs int) {
+func pickBackendUntilForClient(ctx context.Context, pool *backendPool, affinity *ticketAffinity, hello *tlshello.Info, deadline time.Time, retry time.Duration) (backendTarget, bool, error) {
+	if backend, ok := affinity.lookup(hello); ok {
+		return backend, true, nil
+	}
+
+	backend, err := pickBackendUntil(ctx, pool, deadline, retry)
+	if err != nil {
+		return backendTarget{}, false, err
+	}
+	bindTicketBackend(pool, affinity, backend, hello)
+	return backend, false, nil
+}
+
+func bindTicketBackend(pool *backendPool, affinity *ticketAffinity, backend backendTarget, hello *tlshello.Info) {
+	if affinity == nil {
+		return
+	}
+	pool.bindBackend(backend.name)
+	if hello == nil {
+		return
+	}
+	if err := affinity.bind(backend, hello.ServerName); err != nil {
+		info("[GATEWAY] ticket affinity bind failed: " + err.Error())
+	}
+}
+
+func handleClientConn(connID string, c net.Conn, preface []byte, hello *tlshello.Info, pool *backendPool, st *gatewayState, noReadyPolicy string, noReadyWaitSeconds int, noReadyRetryMs int) {
 	info(fmt.Sprintf("t26: [GATEWAY] - operator_selection_start = %d ns", time.Now().UnixNano()))
 	benchtrace.Mark(benchtrace.GatewayWorkerSelectStart, connID, 0)
-	backend, err := pickBackendWithPolicy(pool, noReadyPolicy, noReadyWaitSeconds, noReadyRetryMs)
+	backend, _, err := pickBackendForClient(pool, st.affinity, hello, noReadyPolicy, noReadyWaitSeconds, noReadyRetryMs)
 	if err != nil {
 		_ = c.Close()
 		st.dropped.Add(1)
@@ -538,10 +734,10 @@ func handleClientConn(connID string, c net.Conn, pool *backendPool, st *gatewayS
 	}
 	benchtrace.Mark(benchtrace.GatewayWorkerSelectDone, connID, 0)
 
-	serveClientWithBackend(connID, c, pool, st, backend)
+	serveClientWithBackend(connID, c, preface, pool, st, backend)
 }
 
-func serveClientWithBackend(connID string, c net.Conn, pool *backendPool, st *gatewayState, backend backendTarget) {
+func serveClientWithBackend(connID string, c net.Conn, preface []byte, pool *backendPool, st *gatewayState, backend backendTarget) {
 	defer c.Close()
 
 	st.lastBackend.Store(backend.name)
@@ -553,6 +749,7 @@ func serveClientWithBackend(connID string, c net.Conn, pool *backendPool, st *ga
 	backendConn, dialErr := net.DialTimeout("tcp", backendAddr, 2*time.Second)
 	if dialErr != nil {
 		pool.finishBackend(backend, true)
+		st.affinity.forgetBackend(backend.name)
 		st.dropped.Add(1)
 		st.lastResolution.Store(dialErr.Error())
 		benchtrace.Mark(benchtrace.GatewayBackendDialDone, connID, 1)
@@ -562,12 +759,33 @@ func serveClientWithBackend(connID string, c net.Conn, pool *backendPool, st *ga
 	}
 	benchtrace.Mark(benchtrace.GatewayBackendDialDone, connID, 0)
 	defer backendConn.Close()
+	finishedBackend := false
+	finishBackend := func(failed bool) {
+		if finishedBackend {
+			return
+		}
+		finishedBackend = true
+		pool.finishBackend(backend, failed)
+		if failed {
+			st.affinity.forgetBackend(backend.name)
+		}
+	}
 	defer func() {
-		pool.finishBackend(backend, false)
+		finishBackend(false)
 	}()
 
 	st.forwarded.Add(1)
 	info(fmt.Sprintf("t28: [GATEWAY] - gateway_to_operator_send = %d ns", time.Now().UnixNano()))
+	if len(preface) > 0 {
+		if _, err := backendConn.Write(preface); err != nil {
+			finishBackend(true)
+			st.dropped.Add(1)
+			st.lastResolution.Store(err.Error())
+			benchtrace.Mark(benchtrace.GatewayRequestDropped, connID, 6)
+			logClientDrop("backend write failed: "+err.Error(), pool, nil)
+			return
+		}
+	}
 	benchtrace.Mark(benchtrace.GatewaySpliceStart, connID, 0)
 	splice(c, backendConn)
 	benchtrace.Mark(benchtrace.GatewaySpliceDone, connID, 0)
@@ -608,7 +826,7 @@ func runClientQueue(ctx context.Context, queue <-chan queuedClient, cfg clientQu
 		info(fmt.Sprintf("t26: [GATEWAY] - operator_selection_start = %d ns", time.Now().UnixNano()))
 		benchtrace.Mark(benchtrace.GatewayQueueLeave, client.id, uint64(len(queue)))
 		benchtrace.Mark(benchtrace.GatewayWorkerSelectStart, client.id, 0)
-		backend, err := pickBackendUntil(ctx, pool, client.deadline, cfg.retry)
+		backend, _, err := pickBackendUntilForClient(ctx, pool, st.affinity, client.hello, client.deadline, cfg.retry)
 		if err != nil {
 			_ = client.conn.Close()
 			st.dropped.Add(1)
@@ -620,7 +838,7 @@ func runClientQueue(ctx context.Context, queue <-chan queuedClient, cfg clientQu
 		}
 		benchtrace.Mark(benchtrace.GatewayWorkerSelectDone, client.id, 0)
 
-		go serveClientWithBackend(client.id, client.conn, pool, st, backend)
+		go serveClientWithBackend(client.id, client.conn, client.preface, pool, st, backend)
 	}
 }
 
@@ -737,7 +955,7 @@ func main() {
 		log.Fatalf("unsupported GATEWAY_BACKEND_MODE %q; use auto, docker, kubernetes, swarm, or dns", backendMode)
 	}
 
-	st := &gatewayState{startedAt: time.Now()}
+	st := &gatewayState{startedAt: time.Now(), affinity: newTicketAffinityFromEnv()}
 	st.lastBackend.Store("")
 	st.lastResolution.Store("")
 	startHealthServer(st)
@@ -747,6 +965,7 @@ func main() {
 		rng:      rand.New(rand.NewSource(time.Now().UnixNano())),
 		policy:   selectionPolicy,
 		leased:   make(map[string]struct{}),
+		bound:    make(map[string]struct{}),
 		k8s:      k8sBackend,
 		docker:   dockerBackend,
 	}
@@ -785,6 +1004,9 @@ func main() {
 	if clientQueue != nil {
 		info("[GATEWAY] client queue enabled size=" + strconv.Itoa(clientQueueCfg.size) + " timeout=" + clientQueueCfg.timeout.String() + " retry=" + clientQueueCfg.retry.String())
 	}
+	if st.affinity != nil {
+		info("[GATEWAY] deterministic TLS ticket affinity enabled")
+	}
 	fmt.Fprintf(os.Stderr, "[GATEWAY_READY] listening=%s mode=%s\n", gatewayListenAddr, backendMode)
 
 	for {
@@ -804,6 +1026,16 @@ func main() {
 		info(fmt.Sprintf("t25: [GATEWAY] - client_to_gateway_received = %d ns", time.Now().UnixNano()))
 		logContainerStatus("request_received", pool, clientQueue)
 
+		var preface []byte
+		var hello *tlshello.Info
+		if st.affinity != nil {
+			var peekErr error
+			preface, hello, peekErr = peekClientHello(clientConn)
+			if peekErr != nil {
+				st.lastResolution.Store("clienthello peek: " + peekErr.Error())
+			}
+		}
+
 		if clientQueue != nil {
 			deadline := time.Time{}
 			if clientQueueCfg.timeout > 0 {
@@ -811,7 +1043,7 @@ func main() {
 			}
 
 			select {
-			case clientQueue <- queuedClient{id: connID, conn: clientConn, deadline: deadline}:
+			case clientQueue <- queuedClient{id: connID, conn: clientConn, deadline: deadline, preface: preface, hello: hello}:
 				benchtrace.Mark(benchtrace.GatewayQueueEnter, connID, uint64(len(clientQueue)))
 			default:
 				_ = clientConn.Close()
@@ -824,6 +1056,6 @@ func main() {
 			continue
 		}
 
-		go handleClientConn(connID, clientConn, pool, st, noReadyPolicy, noReadyWaitSeconds, noReadyRetryMs)
+		go handleClientConn(connID, clientConn, preface, hello, pool, st, noReadyPolicy, noReadyWaitSeconds, noReadyRetryMs)
 	}
 }

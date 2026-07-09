@@ -80,7 +80,7 @@ func serverNameForURL(rawURL string, serverNameOverride string) (string, error) 
 	return parsedURL.Hostname(), nil
 }
 
-func newHTTPClient(caPath string, serverName string, closeAfterRequest bool) (*http.Client, *http.Transport, error) {
+func newHTTPClient(caPath string, serverName string, closeAfterRequest bool, sessionCache tls.ClientSessionCache) (*http.Client, *http.Transport, error) {
 	caPEM, err := os.ReadFile(caPath)
 	if err != nil {
 		return nil, nil, err
@@ -97,6 +97,7 @@ func newHTTPClient(caPath string, serverName string, closeAfterRequest bool) (*h
 			RootCAs:                    roots,
 			ServerName:                 serverName,
 			MinVersion:                 tls.VersionTLS13,
+			ClientSessionCache:         sessionCache,
 			SupportDelegatedCredential: true,
 			VerifyPeerCertificate: func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
 				info(fmt.Sprintf("t23: [CLIENT] - CertValidationStart = %d ns", time.Now().UnixNano()))
@@ -169,7 +170,7 @@ func doHTTPSRequest(
 				return
 			}
 
-			info(fmt.Sprintf("t21: [CLIENT] - TLSHandshakeDone = %d ns", time.Now().UnixNano()))
+			info(fmt.Sprintf("t21: [CLIENT] - TLSHandshakeDone = %d ns resumed=%v", time.Now().UnixNano(), cs.DidResume))
 		},
 		WroteRequest: func(info httptrace.WroteRequestInfo) {
 			benchtrace.Mark(benchtrace.ClientRequestSent, traceID, errorArg(info.Err))
@@ -217,7 +218,7 @@ func httpsClient(
 		return nil, 0, err
 	}
 
-	client, tr, err := newHTTPClient(caPath, serverName, true)
+	client, tr, err := newHTTPClient(caPath, serverName, true, nil)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -516,12 +517,15 @@ func runLoopFixedRate(
 	return nil
 }
 
-func runLoopPersistentClients(
+func runLoopLogicalClients(
+	modeName string,
 	duration time.Duration,
 	rateRPS float64,
 	clients int,
 	requestsPerClient int,
 	continueOnError bool,
+	closeAfterRequest bool,
+	useSessionCache bool,
 	method string,
 	rawURL string,
 	headers []string,
@@ -534,7 +538,7 @@ func runLoopPersistentClients(
 		return fmt.Errorf("clients must be > 0")
 	}
 	if duration <= 0 && requestsPerClient <= 0 {
-		return fmt.Errorf("persistent mode requires -d > 0 or -requests-per-client > 0")
+		return fmt.Errorf("%s mode requires -d > 0 or -requests-per-client > 0", modeName)
 	}
 
 	serverName, err := serverNameForURL(rawURL, serverNameOverride)
@@ -561,9 +565,9 @@ func runLoopPersistentClients(
 	}
 
 	if closedLoop {
-		info(fmt.Sprintf("Persistent closed-loop started: duration=%v clients=%d requests_per_client=%d", duration, clients, requestsPerClient))
+		info(fmt.Sprintf("%s closed-loop started: duration=%v clients=%d requests_per_client=%d", modeName, duration, clients, requestsPerClient))
 	} else {
-		info(fmt.Sprintf("Persistent loop started: duration=%v total_rate=%.4f req/s clients=%d per_client_rate=%.4f req/s per_client_interval=%v requests_per_client=%d", duration, rateRPS, clients, perClientRate, perClientInterval, requestsPerClient))
+		info(fmt.Sprintf("%s loop started: duration=%v total_rate=%.4f req/s clients=%d per_client_rate=%.4f req/s per_client_interval=%v requests_per_client=%d", modeName, duration, rateRPS, clients, perClientRate, perClientInterval, requestsPerClient))
 	}
 
 	errCh := make(chan error, 1)
@@ -589,7 +593,11 @@ func runLoopPersistentClients(
 			defer wg.Done()
 
 			localClientID := fmt.Sprintf("%s-%d", clientID, clientIndex+1)
-			httpClient, transport, err := newHTTPClient(caPath, serverName, false)
+			var sessionCache tls.ClientSessionCache
+			if useSessionCache {
+				sessionCache = tls.NewLRUClientSessionCache(1)
+			}
+			httpClient, transport, err := newHTTPClient(caPath, serverName, closeAfterRequest, sessionCache)
 			if err != nil {
 				totalErrors.Add(1)
 				if stop.CompareAndSwap(false, true) {
@@ -639,7 +647,7 @@ func runLoopPersistentClients(
 				info(fmt.Sprintf("Calling request %d: %s as client_id=%s", reqID, rawURL, localClientID))
 				benchtrace.Mark(benchtrace.ClientRequestStart, traceID, uint64(reqID))
 				start := time.Now()
-				response, status, err := doHTTPSRequest(httpClient, method, rawURL, headers, body, localClientID, traceID, false)
+				response, status, err := doHTTPSRequest(httpClient, method, rawURL, headers, body, localClientID, traceID, closeAfterRequest)
 				latency := time.Since(start)
 
 				switch {
@@ -710,7 +718,7 @@ func runLoopPersistentClients(
 	}
 
 	log.Println("=== THROUGHPUT REPORT ===")
-	log.Printf("  mode                 = persistent")
+	log.Printf("  mode                 = %s", modeName)
 	log.Printf("  clients              = %d", clients)
 	log.Printf("  elapsed              = %v", elapsed)
 	if closedLoop {
@@ -738,13 +746,14 @@ func runLoopPersistentClients(
 		log.Println("  latency first_request: no successful samples")
 	}
 	if nReused > 0 {
-		log.Printf("  latency reused_connection (n=%d): mean=%v p50=%v p95=%v p99=%v", nReused, reusedMean, reusedP50, reusedP95, reusedP99)
+		log.Printf("  latency subsequent_request (n=%d): mean=%v p50=%v p95=%v p99=%v", nReused, reusedMean, reusedP50, reusedP95, reusedP99)
 	} else {
-		log.Println("  latency reused_connection: no successful samples")
+		log.Println("  latency subsequent_request: no successful samples")
 	}
 
-	fmt.Printf("THROUGHPUT_CSV,mode,offered_rps,scheduled_rps,started_rps,achieved_rps,sat_ratio,success,non2xx,errors,late,all_p50_ns,all_p95_ns,all_p99_ns,all_mean_ns,first_n,first_p50_ns,first_p95_ns,first_p99_ns,first_mean_ns,reused_n,reused_p50_ns,reused_p95_ns,reused_p99_ns,reused_mean_ns,elapsed_s\n")
-	fmt.Printf("THROUGHPUT_DATA,persistent,%.4f,%.4f,%.4f,%.4f,%.4f,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%.4f\n",
+	fmt.Printf("THROUGHPUT_CSV,mode,offered_rps,scheduled_rps,started_rps,achieved_rps,sat_ratio,success,non2xx,errors,late,all_p50_ns,all_p95_ns,all_p99_ns,all_mean_ns,first_n,first_p50_ns,first_p95_ns,first_p99_ns,first_mean_ns,subsequent_n,subsequent_p50_ns,subsequent_p95_ns,subsequent_p99_ns,subsequent_mean_ns,elapsed_s\n")
+	fmt.Printf("THROUGHPUT_DATA,%s,%.4f,%.4f,%.4f,%.4f,%.4f,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%.4f\n",
+		modeName,
 		offeredRate, scheduledRate, startedRate, achievedRate, saturationRatio,
 		totalSuccess.Load(), totalNon2xx.Load(), totalErrors.Load(), totalLate.Load(),
 		p50.Nanoseconds(), p95.Nanoseconds(), p99.Nanoseconds(), mean.Nanoseconds(),
@@ -786,9 +795,9 @@ func main() {
 
 	durationFlag := flag.Int("d", 0, "duration in seconds")
 	rateFlag := flag.Float64("rate", 0, "total offered request rate in requests per second")
-	modeFlag := flag.String("mode", "fresh", "experiment mode: fresh or persistent")
-	clientsFlag := flag.Int("clients", 1, "number of persistent client goroutines")
-	requestsPerClientFlag := flag.Int("requests-per-client", 0, "persistent requests per client; 0 means run for duration")
+	modeFlag := flag.String("mode", "fresh", "experiment mode: fresh, persistent, or resumption")
+	clientsFlag := flag.Int("clients", 1, "number of logical client goroutines for persistent/resumption")
+	requestsPerClientFlag := flag.Int("requests-per-client", 0, "requests per logical client for persistent/resumption; 0 means run for duration")
 
 	continueFlag := flag.Bool("continue-on-error", true, "continue if request fails")
 	logLevelFlag := flag.String("log_level", "error", "log level: error or debug")
@@ -820,6 +829,7 @@ func main() {
 		fmt.Println("  ./client -log_level debug -d 30 -rate 10 -max-in-flight 32 -H \"Authorization: Bearer token\" https://server:8443/function/init")
 		fmt.Println("  ./client -mode persistent -clients 8 -d 30 -rate 40 -H \"Authorization: Bearer token\" https://server:8443/function/init")
 		fmt.Println("  ./client -mode persistent -clients 8 -d 30 -H \"Authorization: Bearer token\" https://server:8443/function/init")
+		fmt.Println("  ./client -mode resumption -clients 8 -requests-per-client 10 -H \"Authorization: Bearer token\" https://server:8443/function/init")
 		os.Exit(1)
 	}
 
@@ -856,7 +866,7 @@ func main() {
 		return
 	}
 
-	if mode != "persistent" && mode != "session" && mode != "keepalive" && *rateFlag <= 0 {
+	if mode != "persistent" && mode != "session" && mode != "keepalive" && mode != "resumption" && *rateFlag <= 0 {
 		panic("rate must be > 0")
 	}
 
@@ -864,8 +874,12 @@ func main() {
 		panic("max-in-flight must be > 0")
 	}
 
+	warmupRequests := 1
+	if mode == "resumption" {
+		warmupRequests = 0
+	}
 	if err := runIsolatedWarmupRequests(
-		1,
+		warmupRequests,
 		time.Second,
 		method,
 		rawURL,
@@ -896,12 +910,33 @@ func main() {
 			*serverNameFlag,
 		)
 	case "persistent", "session", "keepalive":
-		err = runLoopPersistentClients(
+		err = runLoopLogicalClients(
+			"persistent",
 			duration,
 			*rateFlag,
 			*clientsFlag,
 			*requestsPerClientFlag,
 			*continueFlag,
+			false,
+			false,
+			method,
+			rawURL,
+			headers,
+			*dataFlag,
+			clientID,
+			*caPathFlag,
+			*serverNameFlag,
+		)
+	case "resumption":
+		err = runLoopLogicalClients(
+			"resumption",
+			duration,
+			*rateFlag,
+			*clientsFlag,
+			*requestsPerClientFlag,
+			*continueFlag,
+			true,
+			true,
 			method,
 			rawURL,
 			headers,

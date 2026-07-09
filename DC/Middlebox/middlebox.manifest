@@ -18,6 +18,9 @@ passthrough = true
 [loader.env.MBX_EMIT_QUOTE]
 passthrough = true
 
+[loader.env.DCMB_TICKET_IDENTITY_KEY]
+passthrough = true
+
 [loader.entrypoint]
 uri = "file:/usr/local/lib/x86_64-linux-gnu/gramine/libsysdb.so"
 sha256 = "64678d5b24c9b16cb35e9d4b3380ad20b3bc9911adc0f25cd52e15336ad3228b"
@@ -57,7 +60,7 @@ use_exinfo = false
 
 [[sgx.trusted_files]]
 uri = "file:middlebox"
-sha256 = "d6a87b1ffb80d87a64d0cac81fe0a5cabaa31fc89bbfffaf98218205ebc13dc5"
+sha256 = "483b122558ccf397841eeddef81cd019e6c461ee0e3a259bc80165ac86f943f0"
 
 [[sgx.trusted_files]]
 uri = "file:schemas/init-request-schema.json"

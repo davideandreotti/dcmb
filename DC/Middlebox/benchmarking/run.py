@@ -1075,7 +1075,7 @@ class Controller:
             f"-trace-drop-on-full={str(self.trace_drop_on_full).lower()}",
             "-continue-on-error=true",
         ]
-        if mode == "persistent":
+        if mode in {"persistent", "resumption"}:
             command.extend(["-clients", str(clients)])
         else:
             command.extend(["-max-in-flight", str(self.client_cfg.get("max_in_flight", 64))])

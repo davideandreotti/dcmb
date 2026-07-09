@@ -79,6 +79,7 @@ type dockerBackend struct {
 	workers  map[string]*dockerWorker
 	ready    []string
 	leased   map[string]struct{}
+	bound    map[string]struct{}
 	creating int
 	counter  atomic.Int64
 	createWG sync.WaitGroup
@@ -176,6 +177,11 @@ func newDockerBackendFromEnv() (*dockerBackend, error) {
 		minReady = 0
 	}
 
+	deleteAfterUseDefault := true
+	if strings.TrimSpace(os.Getenv("DCMB_TICKET_IDENTITY_KEY")) != "" {
+		deleteAfterUseDefault = false
+	}
+
 	return &dockerBackend{
 		api: api,
 
@@ -208,7 +214,7 @@ func newDockerBackendFromEnv() (*dockerBackend, error) {
 		minReady:       minReady,
 		scaleUpBy:      scaleUpBy,
 		maxWorkers:     getEnvInt("DOCKER_MAX_OPERATORS", getEnvInt("MAX_OPERATORS", 0)),
-		deleteAfterUse: getEnvBool("DOCKER_DELETE_AFTER_USE", true),
+		deleteAfterUse: getEnvBool("DOCKER_DELETE_AFTER_USE", deleteAfterUseDefault),
 
 		readyTimeout:     envDurationMs("DOCKER_READY_TIMEOUT_MS", 5000),
 		readyPoll:        envDurationMs("DOCKER_READY_POLL_MS", 2),
@@ -217,6 +223,7 @@ func newDockerBackendFromEnv() (*dockerBackend, error) {
 
 		workers:       make(map[string]*dockerWorker),
 		leased:        make(map[string]struct{}),
+		bound:         make(map[string]struct{}),
 		refillTrigger: make(chan struct{}, 1),
 	}, nil
 }
@@ -387,9 +394,13 @@ func (d *dockerBackend) reserveCreateSlots() int {
 
 	readyCount := 0
 	for _, worker := range d.workers {
-		if _, leased := d.leased[worker.name]; !leased {
-			readyCount++
+		if _, leased := d.leased[worker.name]; leased {
+			continue
 		}
+		if _, bound := d.bound[worker.name]; bound {
+			continue
+		}
+		readyCount++
 	}
 
 	missing := d.minReady - readyCount - d.creating
@@ -542,6 +553,9 @@ func (d *dockerBackend) workerEnv() []string {
 	if d.workerEmitQuote != "" {
 		env = append(env, "MBX_EMIT_QUOTE="+d.workerEmitQuote)
 	}
+	if identityKey := strings.TrimSpace(os.Getenv("DCMB_TICKET_IDENTITY_KEY")); identityKey != "" {
+		env = append(env, "DCMB_TICKET_IDENTITY_KEY="+identityKey)
+	}
 	return env
 }
 
@@ -635,6 +649,9 @@ func (d *dockerBackend) pickReadyBackend() (backendTarget, error) {
 		if _, leased := d.leased[name]; leased {
 			continue
 		}
+		if _, bound := d.bound[name]; bound {
+			continue
+		}
 
 		d.leased[name] = struct{}{}
 		d.triggerRefill()
@@ -649,26 +666,55 @@ func (d *dockerBackend) releaseBackend(name string) {
 	d.finishBackend(name, false)
 }
 
+func (d *dockerBackend) bindBackend(name string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if _, ok := d.workers[name]; !ok {
+		return
+	}
+	d.bound[name] = struct{}{}
+	d.ready = removeReadyName(d.ready, name)
+}
+
+func removeReadyName(ready []string, name string) []string {
+	for i := 0; i < len(ready); i++ {
+		if ready[i] != name {
+			continue
+		}
+		copy(ready[i:], ready[i+1:])
+		ready[len(ready)-1] = ""
+		ready = ready[:len(ready)-1]
+		i--
+	}
+	return ready
+}
+
 func (d *dockerBackend) statusString(queueLen int, queueCap int) string {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	readyCount := 0
 	leasedCount := 0
+	boundCount := 0
 	for _, worker := range d.workers {
 		if _, leased := d.leased[worker.name]; leased {
 			leasedCount++
+			continue
+		}
+		if _, bound := d.bound[worker.name]; bound {
+			boundCount++
 			continue
 		}
 		readyCount++
 	}
 
 	status := fmt.Sprintf(
-		"containers total=%d ready=%d ready_queue=%d leased=%d creating=%d min_ready=%d scale_up_by=%d max=%d",
+		"containers total=%d ready=%d ready_queue=%d leased=%d bound=%d creating=%d min_ready=%d scale_up_by=%d max=%d",
 		len(d.workers),
 		readyCount,
 		len(d.ready),
 		leasedCount,
+		boundCount,
 		d.creating,
 		d.minReady,
 		d.scaleUpBy,
@@ -689,8 +735,10 @@ func (d *dockerBackend) finishBackend(name string, failed bool) {
 	shouldDelete := ok && (failed || d.deleteAfterUse || d.shuttingDown)
 	if shouldDelete {
 		delete(d.workers, name)
+		delete(d.bound, name)
 	}
-	if ok && !shouldDelete {
+	_, bound := d.bound[name]
+	if ok && !shouldDelete && !bound {
 		d.ready = append(d.ready, name)
 	}
 	d.mu.Unlock()
@@ -713,6 +761,7 @@ func (d *dockerBackend) shutdown(ctx context.Context) {
 	d.workers = make(map[string]*dockerWorker)
 	d.ready = nil
 	d.leased = make(map[string]struct{})
+	d.bound = make(map[string]struct{})
 	d.mu.Unlock()
 
 	done := make(chan struct{})
