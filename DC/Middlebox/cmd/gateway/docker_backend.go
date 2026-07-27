@@ -52,6 +52,7 @@ type dockerBackend struct {
 	operatorDefaultSNI          string
 	operatorTarget              string
 	operatorCertURL             string
+	operatorCA                  string
 	operatorReuseDC             string
 	operatorExitAfterRequest    string
 	operatorConsumeAfterRequest string
@@ -198,6 +199,7 @@ func newDockerBackendFromEnv() (*dockerBackend, error) {
 		operatorDefaultSNI:          getEnv("DOCKER_WORKER_OPERATOR_DEFAULT_SNI", getEnv("OPERATOR_DEFAULT_SNI", "server")),
 		operatorTarget:              strings.TrimSpace(getEnv("DOCKER_WORKER_OPERATOR_TARGET", os.Getenv("OPERATOR_TARGET"))),
 		operatorCertURL:             strings.TrimSpace(getEnv("DOCKER_WORKER_OPERATOR_CERT_URL", os.Getenv("OPERATOR_CERT_URL"))),
+		operatorCA:                  strings.TrimSpace(getEnv("DOCKER_WORKER_CA", os.Getenv("OPERATOR_CA"))),
 		operatorReuseDC:             getEnv("DOCKER_WORKER_REUSE_DC", getEnv("OPERATOR_REUSE_DC", "true")),
 		operatorExitAfterRequest:    getEnv("DOCKER_WORKER_EXIT_AFTER_REQUEST", getEnv("OPERATOR_EXIT_AFTER_REQUEST", "false")),
 		operatorConsumeAfterRequest: getEnv("DOCKER_WORKER_CONSUME_AFTER_REQUEST", getEnv("OPERATOR_CONSUME_AFTER_REQUEST", "false")),
@@ -470,6 +472,9 @@ func (d *dockerBackend) createAndWaitReady() (*dockerWorker, error) {
 		"-reuse_dc=" + d.operatorReuseDC,
 		"-exit_after_request=" + d.operatorExitAfterRequest,
 		"-consume_after_request=" + d.operatorConsumeAfterRequest,
+	}
+	if d.operatorCA != "" {
+		cmd = append(cmd, "-ca", d.operatorCA)
 	}
 	if d.workerTraceEnabled && d.workerTraceContainerDir != "" {
 		cmd = append(cmd, "-trace", path.Join(d.workerTraceContainerDir, name+".bin"))

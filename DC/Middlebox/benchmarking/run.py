@@ -391,6 +391,13 @@ class ContainerStatsMonitor:
         except ValueError:
             return 0
 
+    def _first_stat_value(self, item: dict[str, Any], *keys: str) -> Any:
+        for key in keys:
+            value = item.get(key)
+            if value not in (None, ""):
+                return value
+        return ""
+
     def _run(self) -> None:
         with self.csv_path.open("w", newline="", encoding="utf-8") as handle, self.total_csv_path.open(
             "w", newline="", encoding="utf-8"
@@ -456,22 +463,29 @@ class ContainerStatsMonitor:
                         name = item.get("Name", "")
                         if not self._include(name):
                             continue
+                        container_id = self._first_stat_value(item, "Container", "ID", "Id")
+                        cpu_perc = self._first_stat_value(item, "CPUPerc", "CPU", "CPUPercent")
+                        mem_usage = self._first_stat_value(item, "MemUsage", "MemUsageBytes")
+                        mem_perc = self._first_stat_value(item, "MemPerc", "MemPercent")
+                        net_io = self._first_stat_value(item, "NetIO", "NetInput")
+                        block_io = self._first_stat_value(item, "BlockIO", "BlockInput")
+                        pids = self._first_stat_value(item, "PIDs", "PIDS")
                         container_count += 1
-                        cpu_sum += self._parse_percent(item.get("CPUPerc", ""))
-                        mem_sum += self._parse_size_bytes(item.get("MemUsage", ""))
-                        pids_sum += self._parse_int(item.get("PIDs", ""))
+                        cpu_sum += self._parse_percent(cpu_perc)
+                        mem_sum += self._parse_size_bytes(mem_usage)
+                        pids_sum += self._parse_int(pids)
                         writer.writerow(
                             {
                                 "ts_ns": ts,
                                 "runtime": self.runtime,
                                 "name": name,
-                                "id": item.get("Container", ""),
-                                "cpu_perc": item.get("CPUPerc", ""),
-                                "mem_usage": item.get("MemUsage", ""),
-                                "mem_perc": item.get("MemPerc", ""),
-                                "net_io": item.get("NetIO", ""),
-                                "block_io": item.get("BlockIO", ""),
-                                "pids": item.get("PIDs", ""),
+                                "id": container_id,
+                                "cpu_perc": cpu_perc,
+                                "mem_usage": mem_usage,
+                                "mem_perc": mem_perc,
+                                "net_io": net_io,
+                                "block_io": block_io,
+                                "pids": pids,
                             }
                         )
                     total_writer.writerow(
@@ -631,12 +645,18 @@ class DockerGatewayDeployment(Deployment):
         network = str(self.cfg.get("network", "dcmb-middlebox-net"))
         image = str(self.cfg.get("image", "dcmb_gateway:docker"))
         worker_image = str(self.cfg.get("worker_image", "dcmiddlebox-worker:baseline"))
+        socket_host = resolve_socket_path(str(self.cfg.get("socket_host", default_container_api_socket(runtime))))
+        socket_container = str(self.cfg.get("socket_container", "/var/run/docker.sock"))
+        certs_host = str(self.cfg.get("worker_certs_host_path", PROJECT_DIR.parent.parent / "certs_external"))
+        certs_container = str(self.cfg.get("worker_certs_container_path", certs_host))
         min_ready = str(self.cfg.get("min_ready", 1))
         scale_up_by = str(self.cfg.get("scale_up_by", min_ready))
         worker_trace_enabled = str(bool(self.cfg.get("worker_trace_enabled", False))).lower()
         worker_reuse_dc = str(bool(self.cfg.get("worker_reuse_dc", True))).lower()
         worker_sgx_enabled = bool(self.cfg.get("worker_sgx_enabled", False))
         traces_host = str(self.run.traces_dir.resolve())
+
+        ensure_container_network(runtime, network, bool(self.cfg.get("create_network", True)))
 
         cmd = [
             runtime,
@@ -651,17 +671,25 @@ class DockerGatewayDeployment(Deployment):
             "-p",
             "8088:8088",
             "-v",
-            "/var/run/docker.sock:/var/run/docker.sock",
+            f"{socket_host}:{socket_container}",
             "-v",
             f"{traces_host}:/trace",
             "-e",
             "GATEWAY_BACKEND_MODE=docker",
             "-e",
+            f"DOCKER_SOCKET={socket_container}",
+            "-e",
             f"DOCKER_WORKER_IMAGE={worker_image}",
+            "-e",
+            f"DOCKER_WORKER_NETWORK={network}",
             "-e",
             f"OPERATOR_TARGET={self.controller.server_target_url}",
             "-e",
             f"OPERATOR_CERT_URL={self.controller.server_cert_url}",
+            "-e",
+            f"DOCKER_WORKER_CERTS_HOST_PATH={certs_host}",
+            "-e",
+            f"DOCKER_WORKER_CERTS_CONTAINER_PATH={certs_container}",
             "-e",
             f"DOCKER_WORKER_REUSE_DC={worker_reuse_dc}",
             "-e",
@@ -683,10 +711,17 @@ class DockerGatewayDeployment(Deployment):
             cmd.extend(["-e", f"DOCKER_WORKER_SGX_ENCLAVE_DEVICE={self.cfg.get('worker_sgx_enclave_device', '/dev/sgx_enclave')}"])
             cmd.extend(["-e", f"DOCKER_WORKER_SGX_PROVISION_DEVICE={self.cfg.get('worker_sgx_provision_device', '/dev/sgx_provision')}"])
             cmd.extend(["-e", f"DOCKER_WORKER_AESM_DIR={self.cfg.get('worker_aesm_dir', '/var/run/aesmd')}"])
+        if "worker_ca" in self.cfg:
+            cmd.extend(["-e", f"DOCKER_WORKER_CA={self.cfg.get('worker_ca')}"])
         if "worker_emit_quote" in self.cfg:
             cmd.extend(["-e", f"DOCKER_WORKER_EMIT_QUOTE={self.cfg.get('worker_emit_quote')}"])
+        if "ticket_identity_key" in self.cfg:
+            cmd.extend(["-e", f"DCMB_TICKET_IDENTITY_KEY={self.cfg.get('ticket_identity_key')}"])
+            cmd.extend(["-e", "DOCKER_DELETE_AFTER_USE=false"])
 
         cmd.extend([
+            "-e",
+            f"DOCKER_READY_TIMEOUT_MS={self.cfg.get('docker_ready_timeout_ms', 15000)}",
             image,
             "-trace",
             "/trace/gateway.bin",
@@ -776,6 +811,43 @@ def run_quiet(cmd: list[str]) -> subprocess.CompletedProcess[str] | None:
     if not cmd or not shutil.which(cmd[0]):
         return None
     return subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, text=True)
+
+
+def resolve_socket_path(path: str) -> str:
+    return os.path.expandvars(os.path.expanduser(path))
+
+
+def default_container_api_socket(runtime: str) -> str:
+    if runtime == "podman":
+        xdg_runtime_dir = os.environ.get("XDG_RUNTIME_DIR", "")
+        if xdg_runtime_dir:
+            return str(Path(xdg_runtime_dir) / "podman" / "podman.sock")
+    return "/var/run/docker.sock"
+
+
+def ensure_container_network(runtime: str, network: str, create: bool = True) -> None:
+    if not network or not shutil.which(runtime):
+        return
+
+    inspected = subprocess.run(
+        [runtime, "network", "inspect", network],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+    if inspected.returncode == 0 or not create:
+        return
+
+    created = subprocess.run(
+        [runtime, "network", "create", network],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if created.returncode != 0:
+        raise RuntimeError(
+            f"failed to create container network {network!r} with {runtime}: {created.stderr.strip()}"
+        )
 
 
 def list_container_ids(runtime: str, name_prefix: str) -> list[str]:
