@@ -1,0 +1,73 @@
+context {
+    id = 1
+    tag = header
+}
+context {
+    id = 2
+    tag = body
+}
+
+activity {
+    tag = print
+
+    match {
+        regex = ".*"
+        which = *
+    }
+
+    action {
+    }
+}
+
+activity {
+    tag = inspect_request
+
+    match {
+        regex = ".*"
+        which = *
+    }
+
+    action {
+        send {
+            handler = "./client {} 2>> stderr.txt"
+            context = header
+        }
+    }
+}
+
+activity {
+    tag = inspect_response
+
+    match {
+        regex = ".*"
+        which = header
+    }
+
+    action {
+        send {
+            handler = "./client {} 2>> stderr.txt"
+            context = header
+        }
+    }
+}
+
+middlebox {
+    tag = mbox1
+    address = tlmsp://127.0.0.1:10001
+
+    context {
+        which = [ header, body ]
+        access = rw
+    }
+    function-to-client = inspect_response
+    function-to-server = inspect_request
+}
+
+client {
+    address = tlmsp://127.0.0.1
+}
+
+server {
+    address = tlmsp://127.0.0.1:4444
+    function = print
+}

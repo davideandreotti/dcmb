@@ -18,6 +18,37 @@
 /ETSI/NewMiddlebox/*.dat
 go.sum
 
+# TLMSP local build/install artifacts
+/.tlmsp/
+/ETSI/tlmsp-compiled.tar
+/ETSI/TLMSP/install/
+/ETSI/TLMSP/**/.deps/
+/ETSI/TLMSP/**/.libs/
+/ETSI/TLMSP/**/autom4te.cache/
+/ETSI/TLMSP/**/Makefile
+/ETSI/TLMSP/**/config.log
+/ETSI/TLMSP/**/config.status
+/ETSI/TLMSP/**/libtool
+/ETSI/TLMSP/**/*.o
+/ETSI/TLMSP/**/*.lo
+/ETSI/TLMSP/**/*.la
+/ETSI/TLMSP/**/*.a
+/ETSI/TLMSP/**/*.so
+/ETSI/TLMSP/**/*.so.*
+/ETSI/TLMSP/**/*.map
+/ETSI/TLMSP/**/*.pc
+/ETSI/TLMSP/tlmsp-openssl/apps/openssl
+/ETSI/TLMSP/tlmsp-openssl/apps/progs.h
+/ETSI/TLMSP/tlmsp-openssl/configdata.pm
+/ETSI/NewMiddlebox/client
+/ETSI/NewMiddlebox/listener
+/ETSI/NewMiddlebox/listener_empty
+/ETSI/NewMiddlebox/jwks.dat
+/ETSI/NewMiddlebox/stderr.txt
+/ETSI/NewMiddlebox/stdout.txt
+/ETSI/NewMiddlebox/waiting.dat
+!/ETSI/NewMiddlebox/go.sum
+
 # Local certificate material generated after cloning.
 /certs_external/*
 !/certs_external/
@@ -79,3 +110,4 @@ DC/Middlebox/*.manifest.sgx
 DC/Middlebox/*.sig
 DC/Middlebox/middlebox_sgxgo_emptyhandler
 DC/Middlebox/.venv*/
+/DC/bovisa/experiments/

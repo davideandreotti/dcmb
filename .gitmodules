@@ -1,3 +1,19 @@
 [submodule "DC/go"]
 	path = DC/go
 	url = https://github.com/ricnava00/go
+[submodule "ETSI/TLMSP/tlmsp-tools"]
+	path = ETSI/TLMSP/tlmsp-tools
+	url = https://github.com/ricnava00/tlmsp-tools.git
+	branch = master
+[submodule "ETSI/TLMSP/tlmsp-openssl"]
+	path = ETSI/TLMSP/tlmsp-openssl
+	url = https://github.com/ricnava00/tlmsp-openssl.git
+	branch = master-tlmsp
+[submodule "ETSI/TLMSP/tlmsp-curl"]
+	path = ETSI/TLMSP/tlmsp-curl
+	url = https://github.com/ricnava00/tlmsp-curl.git
+	branch = master-tlmsp
+[submodule "ETSI/TLMSP/tlmsp-apache-httpd"]
+	path = ETSI/TLMSP/tlmsp-apache-httpd
+	url = https://forge.etsi.org/rep/cyber/tlmsp-apache-httpd.git
+	branch = master-tlmsp
