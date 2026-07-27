@@ -1,8 +1,8 @@
 campaign:
-  name: docker_sgxgo_podman_smoke
+  name: huge_comparison_full_docker_rootful_60s
   output_root: experiments
   runs: 1
-  duration_s: 5
+  duration_s: 60
   warmup_s: 1
   cooldown_s: 2
   readiness_timeout_s: 30
@@ -45,29 +45,43 @@ client:
     - "Authorization: Bearer token"
     - "Content-Type: application/json"
     - "X-Testing: 1"
-  max_in_flight: 64
+  max_in_flight: 1024
 
 client_matrix:
-  modes: [persistent]
+  modes: [fresh, persistent]
   clients: [1]
-  rates: [0]
+  rates: [1, 5, 10, 50, 100, 500, 1000]
 
 deployments:
-  - name: docker_sgxgo_podman_smoke
+  - name: docker_full_noreuse
     kind: docker_gateway
     runtime: podman
     network: dcmb-middlebox-net
     socket_host: /run/podman/podman.sock
     socket_container: /var/run/docker.sock
-    worker_image: dcmiddlebox-worker:sgxgo
+    worker_image: dcmiddlebox-worker:baseline
     worker_certs_host_path: /home/bonsai/dcmb/certs_external
     worker_certs_container_path: /home/bonsai/dcmb/certs_external
-    worker_ca: /home/bonsai/dcmb/certs_external/ca.crt
-    worker_reuse_dc: true
-    worker_sgx_enabled: true
-    worker_emit_quote: "0"
-    min_ready: 1
-    scale_up_by: 1
+    worker_reuse_dc: false
+    min_ready: 10
+    scale_up_by: 10
+    container_stats_scope: all
+    worker_trace_enabled: false
+    docker_api_timeout_ms: 5000
+    docker_ready_timeout_ms: 15000
+
+  - name: docker_empty_noreuse
+    kind: docker_gateway
+    runtime: podman
+    network: dcmb-middlebox-net
+    socket_host: /run/podman/podman.sock
+    socket_container: /var/run/docker.sock
+    worker_image: dcmiddlebox-worker:emptyhandler
+    worker_certs_host_path: /home/bonsai/dcmb/certs_external
+    worker_certs_container_path: /home/bonsai/dcmb/certs_external
+    worker_reuse_dc: false
+    min_ready: 10
+    scale_up_by: 10
     container_stats_scope: all
     worker_trace_enabled: false
     docker_api_timeout_ms: 5000

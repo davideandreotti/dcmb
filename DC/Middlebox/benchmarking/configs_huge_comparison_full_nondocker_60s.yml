@@ -1,0 +1,101 @@
+campaign:
+  name: huge_comparison_full_nondocker_60s
+  output_root: experiments
+  runs: 1
+  duration_s: 60
+  warmup_s: 1
+  cooldown_s: 2
+  readiness_timeout_s: 30
+  cpu_interval_s: 0.2
+  trace_buffer_events: 100000
+  trace_drop_on_full: true
+
+hosts:
+  client:
+    host: localhost
+    ip: 127.0.0.1
+    work_dir: /home/bonsai/dcmb/DC/Middlebox
+  middlebox:
+    host: localhost
+    ip: 127.0.0.1
+    work_dir: /home/bonsai/dcmb/DC/Middlebox
+  server:
+    host: localhost
+    ip: 10.79.1.175
+    work_dir: /home/bonsai/dcmb
+
+paths:
+  middlebox_dir: /home/bonsai/dcmb/DC/Middlebox
+  server_app_script: /home/bonsai/dcmb/PerformanceMeasuring/certs_server.py
+
+server:
+  target_url: https://10.79.1.175:8000
+  cert_url: http://10.79.1.175:5000
+  request_path: /function/init
+  certserver_command: ["./certserver"]
+  appserver_command: ["python3", "-u", "/home/bonsai/dcmb/PerformanceMeasuring/certs_server.py"]
+
+client:
+  binary: ./client
+  method: POST
+  servername: server
+  data:
+    operation: init
+  headers:
+    - "Authorization: Bearer token"
+    - "Content-Type: application/json"
+    - "X-Testing: 1"
+  max_in_flight: 1024
+
+client_matrix:
+  modes: [fresh, persistent]
+  clients: [1]
+  rates: [1, 5, 10, 50, 100, 500, 1000]
+
+deployments:
+  - name: direct
+    kind: direct
+
+  - name: baremetal_full_noreuse
+    kind: baremetal
+    command: ["./middlebox", "-log_level", "debug", "-minimal_logs=false", "-reuse_dc=false"]
+
+  - name: baremetal_empty_noreuse
+    kind: baremetal
+    command: ["./middlebox_emptyhandler", "-log_level", "debug", "-minimal_logs=false", "-reuse_dc=false"]
+
+  - name: sgx_full_noreuse
+    kind: gramine_sgx
+    command: ["gramine-sgx", "middlebox", "-log_level", "debug", "-minimal_logs=false", "-reuse_dc=false"]
+    env:
+      MBX_EMIT_QUOTE: "0"
+
+  - name: sgx_empty_noreuse
+    kind: gramine_sgx
+    command: ["gramine-sgx", "middlebox_emptyhandler", "-log_level", "debug", "-minimal_logs=false", "-reuse_dc=false"]
+    env:
+      MBX_EMIT_QUOTE: "0"
+
+  - name: baremetal_full_reuse
+    kind: baremetal
+    modes: [fresh]
+    command: ["./middlebox", "-log_level", "debug", "-minimal_logs=false", "-reuse_dc=true"]
+
+  - name: baremetal_empty_reuse
+    kind: baremetal
+    modes: [fresh]
+    command: ["./middlebox_emptyhandler", "-log_level", "debug", "-minimal_logs=false", "-reuse_dc=true"]
+
+  - name: sgx_full_reuse
+    kind: gramine_sgx
+    modes: [fresh]
+    command: ["gramine-sgx", "middlebox", "-log_level", "debug", "-minimal_logs=false", "-reuse_dc=true"]
+    env:
+      MBX_EMIT_QUOTE: "0"
+
+  - name: sgx_empty_reuse
+    kind: gramine_sgx
+    modes: [fresh]
+    command: ["gramine-sgx", "middlebox_emptyhandler", "-log_level", "debug", "-minimal_logs=false", "-reuse_dc=true"]
+    env:
+      MBX_EMIT_QUOTE: "0"

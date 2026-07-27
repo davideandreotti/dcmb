@@ -1,5 +1,5 @@
 campaign:
-  name: docker_sgxgo_podman_smoke
+  name: docker_resumption_smoke
   output_root: experiments
   runs: 1
   duration_s: 5
@@ -45,15 +45,51 @@ client:
     - "Authorization: Bearer token"
     - "Content-Type: application/json"
     - "X-Testing: 1"
-  max_in_flight: 64
+  max_in_flight: 1024
 
 client_matrix:
-  modes: [persistent]
+  modes: [resumption]
   clients: [1]
-  rates: [0]
+  rates: [5]
 
 deployments:
-  - name: docker_sgxgo_podman_smoke
+  - name: docker_full_resumption_smoke
+    kind: docker_gateway
+    runtime: podman
+    network: dcmb-middlebox-net
+    socket_host: /run/podman/podman.sock
+    socket_container: /var/run/docker.sock
+    worker_image: dcmiddlebox-worker:baseline
+    worker_certs_host_path: /home/bonsai/dcmb/certs_external
+    worker_certs_container_path: /home/bonsai/dcmb/certs_external
+    worker_reuse_dc: false
+    ticket_identity_key: dcmb-resumption-smoke
+    min_ready: 1
+    scale_up_by: 1
+    container_stats_scope: all
+    worker_trace_enabled: false
+    docker_api_timeout_ms: 5000
+    docker_ready_timeout_ms: 15000
+
+  - name: docker_empty_resumption_smoke
+    kind: docker_gateway
+    runtime: podman
+    network: dcmb-middlebox-net
+    socket_host: /run/podman/podman.sock
+    socket_container: /var/run/docker.sock
+    worker_image: dcmiddlebox-worker:emptyhandler
+    worker_certs_host_path: /home/bonsai/dcmb/certs_external
+    worker_certs_container_path: /home/bonsai/dcmb/certs_external
+    worker_reuse_dc: false
+    ticket_identity_key: dcmb-resumption-smoke
+    min_ready: 1
+    scale_up_by: 1
+    container_stats_scope: all
+    worker_trace_enabled: false
+    docker_api_timeout_ms: 5000
+    docker_ready_timeout_ms: 15000
+
+  - name: docker_sgxgo_full_resumption_smoke
     kind: docker_gateway
     runtime: podman
     network: dcmb-middlebox-net
@@ -63,9 +99,10 @@ deployments:
     worker_certs_host_path: /home/bonsai/dcmb/certs_external
     worker_certs_container_path: /home/bonsai/dcmb/certs_external
     worker_ca: /home/bonsai/dcmb/certs_external/ca.crt
-    worker_reuse_dc: true
+    worker_reuse_dc: false
     worker_sgx_enabled: true
     worker_emit_quote: "0"
+    ticket_identity_key: dcmb-resumption-smoke
     min_ready: 1
     scale_up_by: 1
     container_stats_scope: all
