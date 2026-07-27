@@ -10,6 +10,8 @@ loader.env.OPERATOR_CERT_URL = { passthrough = true }
 loader.env.MBX_EMIT_QUOTE = { passthrough = true }
 loader.env.DCMB_TICKET_IDENTITY_KEY = { passthrough = true }
 sys.enable_sigterm_injection = true
+loader.env.GOMAXPROCS = "2"
+loader.env.GOMEMLIMIT = "52MiB"
 
 fs.mounts = [
   { path = "/lib", uri = "file:{{ gramine.runtimedir() }}" },

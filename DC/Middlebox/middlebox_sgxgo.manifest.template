@@ -10,6 +10,8 @@ loader.env.OPERATOR_CERT_URL = { passthrough = true }
 loader.env.MBX_EMIT_QUOTE = { passthrough = true }
 loader.env.DCMB_TICKET_IDENTITY_KEY = { passthrough = true }
 sys.enable_sigterm_injection = true
+loader.env.GOMAXPROCS = "2"
+loader.env.GOMEMLIMIT = "90MiB"
 
 fs.mounts = [
   # Gramine runtime
@@ -37,9 +39,9 @@ fs.mounts = [
 # =========================
 
 sgx.debug = true
-sgx.enclave_size = "64M"
+sgx.enclave_size = "128M"
 sgx.edmm_enable = false
-sgx.max_threads = 16
+sgx.max_threads = 10
 sgx.remote_attestation = "dcap"
 #sgx.enable_stats = true
 #sgx.profile.enable = "all"
