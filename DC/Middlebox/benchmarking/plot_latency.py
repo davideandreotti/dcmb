@@ -53,6 +53,7 @@ SUMMARY_FIELDS = [
     "success",
     "failed",
     "p99_latency_ms",
+    "mean_latency_ms_filtered",
     "mean_cpu_percent",
     "peak_cpu_percent",
     "startup_process_ready_ms",
@@ -175,7 +176,7 @@ def extract_client_latencies(
     start_times = [event["start_ts"] for event in events_by_id.values() if event.get("start_ts") is not None]
     first_start = min(start_times) if start_times else None
     sorted_starts = sorted(start_times)
-    steady_start = sorted_starts[1] if len(sorted_starts) > 1 else None
+    steady_start = sorted_starts[10] if len(sorted_starts) > 10 else None
     window_end = None
     if first_start is not None:
         if duration_s > 0:
@@ -330,11 +331,18 @@ def build_run_summary_rows(samples: list[dict[str, Any]], run_summaries: list[di
         steady_duration_s = float(summary.get("steady_duration_s") or 0.0)
         achieved_rps = len(steady_ok) / steady_duration_s if steady_duration_s > 0 else 0.0
         latencies = [float(sample["latency_ms"]) for sample in steady_ok]
+        filtered_latencies: list[float] = []
+        if latencies:
+            cutoff = percentile(latencies, 99)
+            filtered_latencies = [value for value in latencies if value <= cutoff]
         cpu_points = cpu_points_for_run(summary)
+        cpu_window_start_ns = int(summary.get("window_start_ns") or 0)
+        if cpu_points:
+            cpu_window_start_ns = max(cpu_window_start_ns, cpu_points[0][0] + 2_000_000_000)
         cpu_values = [
             value
             for ts_ns, value in cpu_points
-            if in_window(ts_ns, int(summary.get("window_start_ns") or 0), int(summary.get("window_end_ns") or 0))
+            if in_window(ts_ns, cpu_window_start_ns, int(summary.get("window_end_ns") or 0))
         ]
         startup = startup_metrics_for_run(summary)
 
@@ -350,6 +358,7 @@ def build_run_summary_rows(samples: list[dict[str, Any]], run_summaries: list[di
                 "success": len(steady_ok),
                 "failed": summary["failed_count"],
                 "p99_latency_ms": f"{percentile(latencies, 99):.6f}" if latencies else "",
+                "mean_latency_ms_filtered": f"{mean(filtered_latencies):.6f}" if filtered_latencies else "",
                 "mean_cpu_percent": f"{mean(cpu_values):.6f}" if cpu_values else "",
                 "peak_cpu_percent": f"{max(cpu_values):.6f}" if cpu_values else "",
                 "startup_process_ready_ms": startup.get("process_ready_ms", ""),
@@ -555,7 +564,61 @@ def percentile(values: list[float], p: float) -> float:
     return ordered[lower] * (1 - weight) + ordered[upper] * weight
 
 
-def plot_timeseries(samples: list[dict[str, Any]], run_summaries: list[dict[str, Any]], output_path: Path) -> None:
+def timeseries_group(deployment: str) -> tuple[str, str, str, str]:
+    if deployment == "direct":
+        return "direct", "Direct", "full", "Direct"
+    if deployment.startswith("docker_sgxgo_"):
+        strategy = ("docker_sgx", "Docker + SGX")
+    elif deployment.startswith("docker_"):
+        strategy = ("docker", "Docker")
+    elif deployment.startswith("baremetal_"):
+        strategy = ("baremetal", "Baremetal")
+    elif deployment.startswith("sgx_"):
+        strategy = ("sgx", "SGX")
+    else:
+        strategy = (deployment, deployment)
+
+    handler = "empty" if "_empty_" in deployment else "full"
+    reuse = "no reuse"
+    if "_noreuse" in deployment:
+        reuse = "no reuse"
+    elif "_reuse" in deployment:
+        reuse = "reuse"
+    return strategy[0], strategy[1], handler, reuse
+
+
+def rate_sort_key(value: Any) -> tuple[int, float, str]:
+    rate = parse_float(value)
+    if rate is None:
+        return (1, 0.0, str(value))
+    return (0, rate, "")
+
+
+def rate_label(value: Any) -> str:
+    rate = parse_float(value)
+    if rate is not None and rate <= 0:
+        return "closed"
+    if rate is not None:
+        return f"{rate:g}"
+    return str(value)
+
+
+def downsample_rows(rows: list[Any], max_points: int) -> list[Any]:
+    if max_points <= 0 or len(rows) <= max_points:
+        return rows
+    if max_points == 1:
+        return [rows[0]]
+    last = len(rows) - 1
+    indexes = [round(index * last / (max_points - 1)) for index in range(max_points)]
+    return [rows[index] for index in indexes]
+
+
+def plot_timeseries(
+    samples: list[dict[str, Any]],
+    run_summaries: list[dict[str, Any]],
+    output_path: Path,
+    max_points_per_subplot: int = 2000,
+) -> list[Path]:
     figure_size_per_subplot = (6.0, 3.2)
     y_label = "End-to-end latency (ms)"
     x_label = "Experiment elapsed time (s)"
@@ -570,87 +633,158 @@ def plot_timeseries(samples: list[dict[str, Any]], run_summaries: list[dict[str,
     runs = [summary for summary in run_summaries if summary["ok_count"] > 0 or summary["failed_count"] > 0]
     if not runs:
         print("[PLOT] no runs with client samples for time-series plot")
-        return
-
-    ncols = 1 if len(runs) <= 2 else 2
-    nrows = math.ceil(len(runs) / ncols)
-    fig_width = figure_size_per_subplot[0] * ncols
-    fig_height = figure_size_per_subplot[1] * nrows
-    fig, axes = plt.subplots(nrows, ncols, figsize=(fig_width, fig_height), squeeze=False)
-    axes_flat = list(axes.flatten())
+        return []
 
     samples_by_run = group_by(samples, "run_name")
-    for ax, summary in zip(axes_flat, runs):
-        run_samples = [
-            sample
-            for sample in samples_by_run.get(summary["run_name"], [])
-            if sample["status"] == "ok" and sample["latency_ms"] != ""
-        ]
-        failed_samples = [
-            sample
-            for sample in samples_by_run.get(summary["run_name"], [])
-            if sample["status"] != "ok" and sample["elapsed_s"] != ""
-        ]
-        xs = [float(sample["elapsed_s"]) for sample in run_samples]
-        ys = [float(sample["latency_ms"]) for sample in run_samples]
+    grouped_runs: dict[tuple[str, str], dict[str, Any]] = {}
+    for summary in runs:
+        strategy_key, strategy_label, handler, reuse = timeseries_group(str(summary["deployment"]))
+        key = (strategy_key, handler)
+        group = grouped_runs.setdefault(
+            key,
+            {"strategy_label": strategy_label, "handler": handler, "runs": []},
+        )
+        group["runs"].append(summary)
 
-        ax.scatter(xs, ys, s=dot_size, alpha=dot_alpha, color=dot_color, edgecolors="none")
-        ma_xs, ma_ys = moving_average_by_time(xs, ys, moving_average_window_s)
-        if ma_xs:
-            ax.plot(ma_xs, ma_ys, color=moving_average_color, linewidth=moving_average_width)
-
-        if ys:
-            mean_latency = sum(ys) / len(ys)
-            ax.axhline(mean_latency, color=moving_average_color, linewidth=0.8, alpha=0.45, linestyle="--")
-            ax.text(
-                1.01,
-                mean_latency,
-                f"avg {mean_latency:.2f} ms",
-                transform=ax.get_yaxis_transform(),
-                ha="left",
-                va="center",
-                color=moving_average_color,
-                fontsize=8,
-                clip_on=False,
-            )
-
-        ax.set_title(run_label(summary), fontsize=10)
-        ax.set_xlabel(x_label)
-        ax.set_ylabel(y_label)
-        ax.grid(True, alpha=0.25)
-        ax.set_ylim(bottom=0)
-
-        if show_failure_annotations and summary["failed_count"] > 0:
-            y_top = ax.get_ylim()[1] if ax.get_ylim()[1] > 0 else 1.0
-            failed_xs = [float(sample["elapsed_s"]) for sample in failed_samples]
-            if failed_xs:
-                ax.plot(
-                    failed_xs,
-                    [y_top * 0.985 for _ in failed_xs],
-                    linestyle="",
-                    marker="|",
-                    markersize=8,
-                    markeredgewidth=1.2,
-                    color="red",
-                )
-            ax.text(
-                0.98,
-                0.92,
-                f"failed: {summary['failed_count']}",
-                transform=ax.transAxes,
-                ha="right",
-                va="top",
-                color="red",
-                fontsize=9,
-            )
-
-    for ax in axes_flat[len(runs) :]:
-        ax.axis("off")
-
-    fig.tight_layout()
+    written_paths: list[Path] = []
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, bbox_inches="tight")
-    plt.close(fig)
+    mode_order = ["fresh", "persistent"]
+    reuse_order = {"no reuse": 0, "reuse": 1, "direct": 2}
+
+    for (strategy_key, handler), group in grouped_runs.items():
+        group_runs = group["runs"]
+        cell_runs: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+        row_keys: set[tuple[str, str]] = set()
+        for summary in group_runs:
+            _, _, _, reuse = timeseries_group(str(summary["deployment"]))
+            rate = str(summary["rate"])
+            mode = str(summary["mode"])
+            row_keys.add((rate, reuse))
+            cell_runs.setdefault((rate, reuse, mode), []).append(summary)
+
+        ordered_rows = sorted(
+            row_keys,
+            key=lambda item: (rate_sort_key(item[0]), reuse_order.get(item[1], 99), item[1]),
+        )
+        nrows = max(1, len(ordered_rows))
+        ncols = len(mode_order)
+        fig_width = figure_size_per_subplot[0] * ncols
+        fig_height = figure_size_per_subplot[1] * nrows
+        fig, axes = plt.subplots(nrows, ncols, figsize=(fig_width, fig_height), squeeze=False)
+
+        for row_index, (rate, reuse) in enumerate(ordered_rows):
+            for col_index, mode in enumerate(mode_order):
+                ax = axes[row_index][col_index]
+                summaries = cell_runs.get((rate, reuse, mode), [])
+                if not summaries:
+                    ax.axis("off")
+                    ax.text(
+                        0.5,
+                        0.5,
+                        f"{mode}\nrate={rate_label(rate)}, {reuse}\nnot available",
+                        transform=ax.transAxes,
+                        ha="center",
+                        va="center",
+                        color="#666666",
+                        fontsize=9,
+                    )
+                    continue
+
+                run_samples: list[dict[str, Any]] = []
+                failed_samples: list[dict[str, Any]] = []
+                failed_count = 0
+                for summary in summaries:
+                    summary_samples = samples_by_run.get(summary["run_name"], [])
+                    run_samples.extend(
+                        sample
+                        for sample in summary_samples
+                        if sample["status"] == "ok" and sample["latency_ms"] != ""
+                    )
+                    failed_samples.extend(
+                        sample
+                        for sample in summary_samples
+                        if sample["status"] != "ok" and sample["elapsed_s"] != ""
+                    )
+                    failed_count += int(summary["failed_count"])
+
+                xs = [float(sample["elapsed_s"]) for sample in run_samples]
+                ys = [float(sample["latency_ms"]) for sample in run_samples]
+                avg_values = [
+                    float(sample["latency_ms"])
+                    for sample in run_samples
+                    if sample.get("steady_state") == "true"
+                ]
+                visible_samples = downsample_rows(run_samples, max_points_per_subplot)
+                visible_xs = [float(sample["elapsed_s"]) for sample in visible_samples]
+                visible_ys = [float(sample["latency_ms"]) for sample in visible_samples]
+
+                ax.scatter(
+                    visible_xs,
+                    visible_ys,
+                    s=dot_size,
+                    alpha=dot_alpha,
+                    color=dot_color,
+                    edgecolors="none",
+                )
+                ma_xs, ma_ys = moving_average_by_time(xs, ys, moving_average_window_s)
+                if ma_xs:
+                    ax.plot(ma_xs, ma_ys, color=moving_average_color, linewidth=moving_average_width)
+
+                if avg_values:
+                    mean_latency = sum(avg_values) / len(avg_values)
+                    ax.axhline(mean_latency, color=moving_average_color, linewidth=0.8, alpha=0.45, linestyle="--")
+                    ax.text(
+                        1.01,
+                        mean_latency,
+                        f"avg {mean_latency:.2f} ms",
+                        transform=ax.get_yaxis_transform(),
+                        ha="left",
+                        va="center",
+                        color=moving_average_color,
+                        fontsize=8,
+                        clip_on=False,
+                    )
+
+                ax.set_title(f"{mode}\nrate={rate_label(rate)}, {reuse}", fontsize=10)
+                ax.set_xlabel(x_label)
+                ax.set_ylabel(y_label)
+                ax.grid(True, alpha=0.25)
+                ax.set_ylim(bottom=0)
+
+                if show_failure_annotations and failed_count > 0:
+                    y_top = ax.get_ylim()[1] if ax.get_ylim()[1] > 0 else 1.0
+                    visible_failed = downsample_rows(failed_samples, max_points_per_subplot)
+                    failed_xs = [float(sample["elapsed_s"]) for sample in visible_failed]
+                    if failed_xs:
+                        ax.plot(
+                            failed_xs,
+                            [y_top * 0.985 for _ in failed_xs],
+                            linestyle="",
+                            marker="|",
+                            markersize=8,
+                            markeredgewidth=1.2,
+                            color="red",
+                        )
+                    ax.text(
+                        0.98,
+                        0.92,
+                        f"failed: {failed_count}",
+                        transform=ax.transAxes,
+                        ha="right",
+                        va="top",
+                        color="red",
+                        fontsize=9,
+                    )
+
+        handler_label = "full handler" if handler == "full" else "empty handler"
+        fig.suptitle(f"{group['strategy_label']} - {handler_label}", fontsize=14)
+        fig.tight_layout(rect=[0, 0, 1, 0.98])
+        group_output_path = output_path.with_name(f"{output_path.stem}_{strategy_key}_{handler}{output_path.suffix}")
+        fig.savefig(group_output_path, bbox_inches="tight")
+        plt.close(fig)
+        written_paths.append(group_output_path)
+
+    return written_paths
 
 
 def plot_violin(samples: list[dict[str, Any]], run_summaries: list[dict[str, Any]], output_path: Path) -> None:
@@ -742,52 +876,144 @@ def plot_violin(samples: list[dict[str, Any]], run_summaries: list[dict[str, Any
     plt.close(fig)
 
 
-def plot_throughput_offered_achieved(summary_rows: list[dict[str, Any]], output_path: Path) -> None:
-    figure_size = (7.0, 4.5)
-    grouped = aggregate_metric_by_rate(summary_rows, "achieved_rps", include_direct=True)
-    if not grouped:
-        print("[PLOT] no throughput summary data")
+def include_throughput_row(row: dict[str, Any], include_direct: bool) -> bool:
+    strategy, _, handler, reuse = timeseries_group(str(row["deployment"]))
+    mode = str(row["mode"])
+    if strategy == "direct":
+        return include_direct
+    if handler != "full":
+        return False
+    if mode == "fresh" and strategy in {"baremetal", "sgx"}:
+        return reuse == "reuse"
+    return mode in {"fresh", "persistent"}
+
+
+def pretty_strategy_label(strategy: str) -> str:
+    labels = {
+        "direct": "Direct",
+        "baremetal": "Baremetal",
+        "sgx": "SGX",
+        "docker": "Docker",
+        "docker_sgx": "Docker + SGX",
+    }
+    return labels.get(strategy, strategy)
+
+
+def aggregate_throughput_metric_by_mode(
+    summary_rows: list[dict[str, Any]],
+    metric: str,
+    include_direct: bool,
+) -> dict[str, dict[str, list[tuple[float, float]]]]:
+    grouped_values: dict[str, dict[str, dict[float, list[float]]]] = {"fresh": {}, "persistent": {}}
+    for row in summary_rows:
+        mode = str(row["mode"])
+        if mode not in grouped_values:
+            continue
+        if not include_throughput_row(row, include_direct):
+            continue
+        offered = parse_float(row.get("offered_rps"))
+        value = parse_float(row.get(metric))
+        if offered is None or offered <= 0 or value is None:
+            continue
+        strategy, _, _, _ = timeseries_group(str(row["deployment"]))
+        grouped_values[mode].setdefault(strategy, {}).setdefault(offered, []).append(value)
+
+    result: dict[str, dict[str, list[tuple[float, float]]]] = {}
+    for mode, values_by_strategy in grouped_values.items():
+        mode_result: dict[str, list[tuple[float, float]]] = {}
+        for strategy, values_by_rate in values_by_strategy.items():
+            points = [(rate, mean(values)) for rate, values in sorted(values_by_rate.items()) if values]
+            if points:
+                mode_result[strategy] = points
+        result[mode] = mode_result
+    return result
+
+
+def plot_metric_vs_offered(
+    summary_rows: list[dict[str, Any]],
+    output_path: Path,
+    metric: str,
+    ylabel: str,
+    title: str,
+    include_direct: bool,
+) -> None:
+    grouped = aggregate_throughput_metric_by_mode(summary_rows, metric, include_direct)
+    if not any(grouped.get(mode) for mode in ("fresh", "persistent")):
+        print(f"[PLOT] no data for {output_path.name}")
         return
 
-    fig, ax = plt.subplots(figsize=figure_size)
-    for group, points in grouped.items():
-        xs = [point[0] for point in points]
-        ys = [point[1] for point in points]
-        ax.plot(xs, ys, marker="o", linewidth=1.4, label=group_label(group))
+    strategy_order = ["direct", "baremetal", "sgx", "docker", "docker_sgx"]
+    colors = {
+        "direct": "#457b9d",
+        "baremetal": "#2a9d8f",
+        "sgx": "#e76f51",
+        "docker": "#f4a261",
+        "docker_sgx": "#6a4c93",
+    }
+    fig, axes = plt.subplots(1, 2, figsize=(11.0, 4.5), sharex=True, squeeze=False)
+    axes_flat = list(axes.flatten())
+    handles_by_label: dict[str, Any] = {}
 
-    ax.set_xlabel("Offered throughput (requests/s)")
-    ax.set_ylabel("Achieved throughput (requests/s)")
-    ax.set_title("Offered vs achieved throughput")
-    ax.grid(True, alpha=0.25)
-    ax.legend(fontsize=8)
-    fig.tight_layout()
+    for ax, mode, subplot_title in zip(axes_flat, ["fresh", "persistent"], ["Fresh", "Persistent"]):
+        mode_data = grouped.get(mode, {})
+        for strategy in strategy_order:
+            points = mode_data.get(strategy)
+            if not points:
+                continue
+            xs = [point[0] for point in points]
+            ys = [point[1] for point in points]
+            label = pretty_strategy_label(strategy)
+            (line,) = ax.plot(
+                xs,
+                ys,
+                marker="o",
+                linewidth=1.4,
+                label=label,
+                color=colors.get(strategy),
+            )
+            handles_by_label.setdefault(label, line)
+
+        ax.set_xlabel("Offered throughput (requests/s)")
+        ax.set_ylabel(ylabel)
+        ax.set_title(subplot_title)
+        ax.grid(True, alpha=0.25)
+        ax.set_ylim(bottom=0)
+
+    fig.suptitle(title, fontsize=13)
+    if handles_by_label:
+        fig.legend(
+            list(handles_by_label.values()),
+            list(handles_by_label.keys()),
+            loc="lower center",
+            ncol=min(len(handles_by_label), 5),
+            fontsize=8,
+        )
+    fig.tight_layout(rect=[0, 0.12, 1, 0.94])
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, bbox_inches="tight")
     plt.close(fig)
+
+
+def plot_throughput_offered_achieved(summary_rows: list[dict[str, Any]], output_path: Path) -> None:
+    plot_metric_vs_offered(
+        summary_rows,
+        output_path,
+        metric="achieved_rps",
+        ylabel="Achieved throughput (requests/s)",
+        title="Offered vs Achieved Throughput",
+        include_direct=True,
+    )
 
 
 def plot_latency_vs_offered(summary_rows: list[dict[str, Any]], output_path: Path) -> None:
-    figure_size = (7.0, 4.5)
-    grouped = aggregate_metric_by_rate(summary_rows, "p99_latency_ms", include_direct=True)
-    if not grouped:
-        print("[PLOT] no latency summary data")
-        return
-
-    fig, ax = plt.subplots(figsize=figure_size)
-    for group, points in grouped.items():
-        xs = [point[0] for point in points]
-        ys = [point[1] for point in points]
-        ax.plot(xs, ys, marker="o", linewidth=1.4, label=group_label(group))
-
-    ax.set_xlabel("Offered throughput (requests/s)")
-    ax.set_ylabel("p99 end-to-end latency (ms)")
-    ax.set_title("Offered throughput vs p99 latency")
-    ax.grid(True, alpha=0.25)
-    ax.legend(fontsize=8)
-    fig.tight_layout()
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, bbox_inches="tight")
-    plt.close(fig)
+    plot_metric_vs_offered(
+        summary_rows,
+        output_path,
+        metric="mean_latency_ms_filtered",
+        ylabel="Mean end-to-end latency, p99-filtered (ms)",
+        title="Offered Throughput vs Mean End-to-End Latency",
+        include_direct=True,
+    )
 
 
 def plot_cpu_timeseries(run_summaries: list[dict[str, Any]], output_path: Path) -> None:
@@ -869,27 +1095,14 @@ def plot_memory_timeseries(run_summaries: list[dict[str, Any]], output_path: Pat
 
 
 def plot_cpu_vs_offered(summary_rows: list[dict[str, Any]], output_path: Path) -> None:
-    figure_size = (7.0, 4.5)
-    grouped = aggregate_metric_by_rate(summary_rows, "mean_cpu_percent", include_direct=False)
-    if not grouped:
-        print("[PLOT] no CPU summary data")
-        return
-
-    fig, ax = plt.subplots(figsize=figure_size)
-    for group, points in grouped.items():
-        xs = [point[0] for point in points]
-        ys = [point[1] for point in points]
-        ax.plot(xs, ys, marker="o", linewidth=1.4, label=group_label(group))
-
-    ax.set_xlabel("Offered throughput (requests/s)")
-    ax.set_ylabel("Mean middlebox CPU (%)")
-    ax.set_title("Offered throughput vs middlebox CPU")
-    ax.grid(True, alpha=0.25)
-    ax.legend(fontsize=8)
-    fig.tight_layout()
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, bbox_inches="tight")
-    plt.close(fig)
+    plot_metric_vs_offered(
+        summary_rows,
+        output_path,
+        metric="mean_cpu_percent",
+        ylabel="Total CPU usage (%)",
+        title="Offered Throughput vs Total CPU Usage",
+        include_direct=False,
+    )
 
 
 def plot_startup_times(run_summaries: list[dict[str, Any]], output_path: Path) -> None:
@@ -974,6 +1187,7 @@ def plot_handshake_request_duration(
     samples: list[dict[str, Any]],
     run_summaries: list[dict[str, Any]],
     output_path: Path,
+    rate_filter: float | None = 10.0,
 ) -> None:
     figure_size_per_mode = (8.0, 4.0)
     modes = ordered_unique(str(summary["mode"]) for summary in run_summaries)
@@ -982,6 +1196,10 @@ def plot_handshake_request_duration(
     for sample in samples:
         if sample["status"] != "ok":
             continue
+        if rate_filter is not None:
+            rate = parse_float(sample.get("rate"))
+            if rate is None or not math.isclose(rate, rate_filter):
+                continue
         deployment = str(sample["deployment"])
         mode = str(sample["mode"])
         bucket = mode_data.setdefault(mode, {}).setdefault(deployment, {"handshake": [], "request": []})
@@ -1016,7 +1234,10 @@ def plot_handshake_request_duration(
         ax.set_xticks(xs)
         ax.set_xticklabels(deployments)
         ax.set_ylabel("Duration (ms)")
-        ax.set_title(f"Handshake and request duration ({mode})")
+        title = f"Handshake and request duration ({mode})"
+        if rate_filter is not None:
+            title += f", rate={rate_filter:g}"
+        ax.set_title(title)
         ax.grid(True, axis="y", alpha=0.25)
         ax.set_ylim(bottom=0)
         ax.legend(fontsize=8)
@@ -1025,6 +1246,152 @@ def plot_handshake_request_duration(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, bbox_inches="tight")
     plt.close(fig)
+
+
+def add_run_mean(
+    buckets: dict[tuple[str, str], dict[str, list[float]]],
+    bucket: tuple[str, str],
+    run_name: str,
+    value: float,
+) -> None:
+    buckets.setdefault(bucket, {}).setdefault(run_name, []).append(value)
+
+
+def finalize_run_means(
+    buckets: dict[tuple[str, str], dict[str, list[float]]],
+) -> dict[tuple[str, str], list[float]]:
+    result: dict[tuple[str, str], list[float]] = {}
+    for bucket, runs in buckets.items():
+        means = [mean(values) for values in runs.values() if values]
+        if means:
+            result[bucket] = means
+    return result
+
+
+def plot_grouped_bar_comparison(
+    values_by_bucket: dict[tuple[str, str], list[float]],
+    output_path: Path,
+    title: str,
+    ylabel: str,
+    bar_order: list[tuple[str, str, str]],
+) -> None:
+    strategy_order = [
+        ("direct", "Direct"),
+        ("baremetal", "Baremetal"),
+        ("sgx", "SGX"),
+        ("docker", "Docker"),
+        ("docker_sgx", "Docker + SGX"),
+    ]
+    groups = [
+        (strategy, label)
+        for strategy, label in strategy_order
+        if any((strategy, bar_key) in values_by_bucket for bar_key, _, _ in bar_order)
+    ]
+    if not groups:
+        print(f"[PLOT] no data for {output_path.name}")
+        return
+
+    width = 0.22
+    fig, ax = plt.subplots(figsize=(8.0, 4.5))
+    legend_seen: set[str] = set()
+
+    for group_index, (strategy, _) in enumerate(groups):
+        available = [
+            (bar_key, bar_label, color)
+            for bar_key, bar_label, color in bar_order
+            if (strategy, bar_key) in values_by_bucket
+        ]
+        for bar_index, (bar_key, bar_label, color) in enumerate(available):
+            run_means = values_by_bucket[(strategy, bar_key)]
+            x = group_index + (bar_index - (len(available) - 1) / 2) * width
+            label = bar_label if bar_label not in legend_seen else None
+            ax.bar(
+                x,
+                mean(run_means),
+                width=width,
+                yerr=confidence_interval_95(run_means) if len(run_means) > 1 else None,
+                capsize=4 if len(run_means) > 1 else 0,
+                label=label,
+                color=color,
+            )
+            legend_seen.add(bar_label)
+
+    ax.set_xticks(range(len(groups)))
+    ax.set_xticklabels([label for _, label in groups])
+    ax.set_ylabel(ylabel)
+    ax.set_title(title)
+    ax.grid(True, axis="y", alpha=0.25)
+    ax.set_ylim(bottom=0)
+    if legend_seen:
+        ax.legend(fontsize=8)
+    fig.tight_layout()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_dc_reuse_handshake_latency(samples: list[dict[str, Any]], output_path: Path) -> None:
+    buckets: dict[tuple[str, str], dict[str, list[float]]] = {}
+    for sample in samples:
+        if sample["status"] != "ok" or str(sample["mode"]) != "fresh":
+            continue
+        rate = parse_float(sample.get("rate"))
+        value = parse_float(sample.get("handshake_ms"))
+        if rate is None or not math.isclose(rate, 5.0) or value is None:
+            continue
+
+        strategy, _, handler, reuse = timeseries_group(str(sample["deployment"]))
+        if strategy == "direct":
+            add_run_mean(buckets, (strategy, "direct"), str(sample["run_name"]), value)
+            continue
+        if handler != "full":
+            continue
+        add_run_mean(buckets, (strategy, reuse), str(sample["run_name"]), value)
+
+    plot_grouped_bar_comparison(
+        finalize_run_means(buckets),
+        output_path,
+        "Delegated Credential Reuse - Handshake Latency (fresh, rate=5)",
+        "Average handshake time (ms)",
+        [
+            ("direct", "Direct", "#8ecae6"),
+            ("no reuse", "No reuse", "#f4a261"),
+            ("reuse", "Reuse", "#2a9d8f"),
+        ],
+    )
+
+
+def plot_handler_request_latency(samples: list[dict[str, Any]], output_path: Path) -> None:
+    buckets: dict[tuple[str, str], dict[str, list[float]]] = {}
+    for sample in samples:
+        if sample["status"] != "ok" or str(sample["mode"]) != "persistent":
+            continue
+        if sample.get("steady_state") != "true":
+            continue
+        rate = parse_float(sample.get("rate"))
+        value = parse_float(sample.get("request_ms"))
+        if rate is None or not math.isclose(rate, 5.0) or value is None:
+            continue
+
+        strategy, _, handler, reuse = timeseries_group(str(sample["deployment"]))
+        if strategy == "direct":
+            add_run_mean(buckets, (strategy, "direct"), str(sample["run_name"]), value)
+            continue
+        if reuse == "reuse":
+            continue
+        add_run_mean(buckets, (strategy, handler), str(sample["run_name"]), value)
+
+    plot_grouped_bar_comparison(
+        finalize_run_means(buckets),
+        output_path,
+        "Handler Cost - Request Latency (persistent, rate=5)",
+        "Average request time excluding handshake (ms)",
+        [
+            ("direct", "Direct", "#8ecae6"),
+            ("full", "Full", "#2a9d8f"),
+            ("empty", "Empty", "#f4a261"),
+        ],
+    )
 
 
 def aggregate_metric_by_rate(
@@ -1093,6 +1460,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Plot end-to-end latency from a benchmark campaign")
     parser.add_argument("campaign_dir", type=Path, help="campaign directory created by benchmarking/run.py")
     parser.add_argument("--out-dir", type=Path, default=None, help="output directory; default: <campaign>/plots")
+    parser.add_argument(
+        "--handshake-request-rate",
+        type=float,
+        default=10.0,
+        help="offered rate to use for handshake_request_duration.pdf; default: 10",
+    )
     args = parser.parse_args()
 
     campaign_dir = args.campaign_dir.resolve()
@@ -1109,7 +1482,7 @@ def main() -> None:
     summary_rows = build_run_summary_rows(samples, run_summaries)
     write_samples_csv(samples, out_dir / samples_filename)
     write_summary_csv(summary_rows, out_dir / summary_filename)
-    plot_timeseries(samples, run_summaries, out_dir / timeseries_filename)
+    timeseries_paths = plot_timeseries(samples, run_summaries, out_dir / timeseries_filename)
     plot_violin(samples, run_summaries, out_dir / violin_filename)
     plot_throughput_offered_achieved(summary_rows, out_dir / "throughput_offered_achieved.pdf")
     plot_latency_vs_offered(summary_rows, out_dir / "latency_vs_offered.pdf")
@@ -1118,12 +1491,22 @@ def main() -> None:
     plot_cpu_vs_offered(summary_rows, out_dir / "cpu_vs_offered.pdf")
     plot_startup_times(run_summaries, out_dir / "startup_times.pdf")
     plot_worker_startup_distribution(run_summaries, out_dir / "worker_startup_distribution.pdf")
-    plot_handshake_request_duration(samples, run_summaries, out_dir / "handshake_request_duration.pdf")
+    plot_handshake_request_duration(
+        samples,
+        run_summaries,
+        out_dir / "handshake_request_duration.pdf",
+        rate_filter=args.handshake_request_rate,
+    )
+    plot_dc_reuse_handshake_latency(samples, out_dir / "dc_reuse_handshake_latency.pdf")
+    plot_handler_request_latency(samples, out_dir / "handler_request_latency.pdf")
 
     print(f"[PLOT] wrote {out_dir / samples_filename}")
     print(f"[PLOT] wrote {out_dir / summary_filename}")
-    print(f"[PLOT] wrote {out_dir / timeseries_filename}")
+    for path in timeseries_paths:
+        print(f"[PLOT] wrote {path}")
     print(f"[PLOT] wrote {out_dir / violin_filename}")
+    print(f"[PLOT] wrote {out_dir / 'dc_reuse_handshake_latency.pdf'}")
+    print(f"[PLOT] wrote {out_dir / 'handler_request_latency.pdf'}")
 
 
 if __name__ == "__main__":
