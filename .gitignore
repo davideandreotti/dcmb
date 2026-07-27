@@ -74,3 +74,8 @@ DC/Middlebox/middlebox_emptyhandler.sig
 DC/Middlebox/middlebox_emptyhandler.manifest
 DC/Middlebox/middlebox_emptyhandler.manifest.sgx
 DC/Middlebox/middlebox_emptyhandler
+DC/Middlebox/*.manifest
+DC/Middlebox/*.manifest.sgx
+DC/Middlebox/*.sig
+DC/Middlebox/middlebox_sgxgo_emptyhandler
+DC/Middlebox/.venv*/
