@@ -26,6 +26,7 @@ import (
 	"dc/middlebox/internal/ticketidentity"
 	"dc/middlebox/internal/tlshello"
 	benchtrace "dc/middlebox/internal/trace"
+	"dc/middlebox/internal/tracebind"
 )
 
 const (
@@ -758,6 +759,11 @@ func serveClientWithBackend(connID string, c net.Conn, preface []byte, pool *bac
 		return
 	}
 	benchtrace.Mark(benchtrace.GatewayBackendDialDone, connID, 0)
+	benchtrace.Mark(
+		benchtrace.GatewayBackendConnectionBind,
+		connID,
+		tracebind.ConnectionKey(backendConn.LocalAddr(), backendConn.RemoteAddr()),
+	)
 	defer backendConn.Close()
 	finishedBackend := false
 	finishBackend := func(failed bool) {
@@ -777,6 +783,7 @@ func serveClientWithBackend(connID string, c net.Conn, preface []byte, pool *bac
 	st.forwarded.Add(1)
 	info(fmt.Sprintf("t28: [GATEWAY] - gateway_to_operator_send = %d ns", time.Now().UnixNano()))
 	if len(preface) > 0 {
+		benchtrace.Mark(benchtrace.GatewayClientToBackendFirst, connID, uint64(len(preface)))
 		if _, err := backendConn.Write(preface); err != nil {
 			finishBackend(true)
 			st.dropped.Add(1)
@@ -787,7 +794,7 @@ func serveClientWithBackend(connID string, c net.Conn, preface []byte, pool *bac
 		}
 	}
 	benchtrace.Mark(benchtrace.GatewaySpliceStart, connID, 0)
-	splice(c, backendConn)
+	splice(c, backendConn, connID, len(preface) > 0)
 	benchtrace.Mark(benchtrace.GatewaySpliceDone, connID, 0)
 }
 
@@ -854,19 +861,44 @@ func drainClientQueue(queue <-chan queuedClient) {
 	}
 }
 
-func splice(a net.Conn, b net.Conn) {
+type firstTraceReader struct {
+	source net.Conn
+	event  uint32
+	id     string
+	marked bool
+}
+
+func (r *firstTraceReader) Read(p []byte) (int, error) {
+	n, err := r.source.Read(p)
+	if n > 0 && !r.marked {
+		r.marked = true
+		benchtrace.Mark(r.event, r.id, uint64(n))
+	}
+	return n, err
+}
+
+func splice(a net.Conn, b net.Conn, connID string, clientPrefaceMarked bool) {
 	var wg sync.WaitGroup
 	wg.Add(2)
 
 	go func() {
 		defer wg.Done()
-		_, _ = io.Copy(a, b)
+		_, _ = io.Copy(a, &firstTraceReader{
+			source: b,
+			event:  benchtrace.GatewayBackendToClientFirst,
+			id:     connID,
+		})
 		_ = a.SetDeadline(time.Now())
 	}()
 
 	go func() {
 		defer wg.Done()
-		_, _ = io.Copy(b, a)
+		_, _ = io.Copy(b, &firstTraceReader{
+			source: a,
+			event:  benchtrace.GatewayClientToBackendFirst,
+			id:     connID,
+			marked: clientPrefaceMarked,
+		})
 		_ = b.SetDeadline(time.Now())
 	}()
 
@@ -1023,6 +1055,11 @@ func main() {
 		st.accepted.Add(1)
 		connID := fmt.Sprintf("gateway-conn-%d", gatewayConnCounter.Add(1))
 		benchtrace.Mark(benchtrace.GatewayClientAccepted, connID, uint64(st.accepted.Load()))
+		benchtrace.Mark(
+			benchtrace.GatewayClientConnectionBind,
+			connID,
+			tracebind.ConnectionKey(clientConn.LocalAddr(), clientConn.RemoteAddr()),
+		)
 		info(fmt.Sprintf("t25: [GATEWAY] - client_to_gateway_received = %d ns", time.Now().UnixNano()))
 		logContainerStatus("request_received", pool, clientQueue)
 

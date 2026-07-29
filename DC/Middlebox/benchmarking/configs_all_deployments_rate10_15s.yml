@@ -1,6 +1,7 @@
 campaign:
   name: all_deployments_rate10_15s
   output_root: experiments
+  # Final paper: use >=5 runs/point, 10 for noisy p99 points; startup-only uses 20-30.
   runs: 1
   duration_s: 15
   warmup_s: 1
@@ -58,58 +59,48 @@ deployments:
 
   - name: baremetal_full_reuse
     kind: baremetal
-    command: ["./middlebox", "-log_level", "debug", "-minimal_logs=false", "-reuse_dc=true"]
+    command: ["./middlebox", "-log_level", "error", "-minimal_logs=true", "-reuse_dc=true"]
 
   - name: baremetal_full_noreuse
     kind: baremetal
-    command: ["./middlebox", "-log_level", "debug", "-minimal_logs=false", "-reuse_dc=false"]
+    command: ["./middlebox", "-log_level", "error", "-minimal_logs=true", "-reuse_dc=false"]
 
   - name: baremetal_empty_reuse
     kind: baremetal
-    command: ["./middlebox_emptyhandler", "-log_level", "debug", "-minimal_logs=false", "-reuse_dc=true"]
+    command: ["./middlebox_emptyhandler", "-log_level", "error", "-minimal_logs=true", "-reuse_dc=true"]
 
   - name: baremetal_empty_noreuse
     kind: baremetal
-    command: ["./middlebox_emptyhandler", "-log_level", "debug", "-minimal_logs=false", "-reuse_dc=false"]
+    command: ["./middlebox_emptyhandler", "-log_level", "error", "-minimal_logs=true", "-reuse_dc=false"]
 
   - name: sgx_full_reuse
     kind: gramine_sgx
-    command: ["gramine-sgx", "middlebox", "-log_level", "debug", "-minimal_logs=false", "-reuse_dc=true"]
+    command: ["gramine-sgx", "middlebox", "-log_level", "error", "-minimal_logs=true", "-reuse_dc=true"]
     env:
       MBX_EMIT_QUOTE: "1"
 
   - name: sgx_full_noreuse
     kind: gramine_sgx
-    command: ["gramine-sgx", "middlebox", "-log_level", "debug", "-minimal_logs=false", "-reuse_dc=false"]
+    command: ["gramine-sgx", "middlebox", "-log_level", "error", "-minimal_logs=true", "-reuse_dc=false"]
     env:
       MBX_EMIT_QUOTE: "1"
 
   - name: sgx_empty_reuse
     kind: gramine_sgx
-    command: ["gramine-sgx", "middlebox_emptyhandler", "-log_level", "debug", "-minimal_logs=false", "-reuse_dc=true"]
+    command: ["gramine-sgx", "middlebox_emptyhandler", "-log_level", "error", "-minimal_logs=true", "-reuse_dc=true"]
     env:
       MBX_EMIT_QUOTE: "1"
 
   - name: sgx_empty_noreuse
     kind: gramine_sgx
-    command: ["gramine-sgx", "middlebox_emptyhandler", "-log_level", "debug", "-minimal_logs=false", "-reuse_dc=false"]
-    env:
-      MBX_EMIT_QUOTE: "1"
-
-  - name: sgxgo_full_reuse
-    kind: gramine_sgx
-    command: ["gramine-sgx", "middlebox_sgxgo", "-log_level", "debug", "-minimal_logs=false", "-reuse_dc=true"]
-    env:
-      MBX_EMIT_QUOTE: "1"
-
-  - name: sgxgo_full_noreuse
-    kind: gramine_sgx
-    command: ["gramine-sgx", "middlebox_sgxgo", "-log_level", "debug", "-minimal_logs=false", "-reuse_dc=false"]
+    command: ["gramine-sgx", "middlebox_emptyhandler", "-log_level", "error", "-minimal_logs=true", "-reuse_dc=false"]
     env:
       MBX_EMIT_QUOTE: "1"
 
   - name: docker_full_noreuse
     kind: docker_gateway
+    prewarm_for_clients: true
+    pool_readiness_timeout_s: 120
     worker_image: dcmiddlebox-worker:baseline
     worker_reuse_dc: false
     min_ready: 10
@@ -120,6 +111,8 @@ deployments:
 
   - name: docker_empty_noreuse
     kind: docker_gateway
+    prewarm_for_clients: true
+    pool_readiness_timeout_s: 120
     worker_image: dcmiddlebox-worker:emptyhandler
     worker_reuse_dc: false
     min_ready: 10
@@ -128,8 +121,10 @@ deployments:
     worker_trace_enabled: false
     docker_api_timeout_ms: 5000
 
-  - name: docker_sgxgo_quote
+  - name: docker_sgxgo_full_noreuse
     kind: docker_gateway
+    prewarm_for_clients: true
+    pool_readiness_timeout_s: 120
     worker_image: dcmiddlebox-worker:sgxgo
     worker_reuse_dc: false
     worker_sgx_enabled: true

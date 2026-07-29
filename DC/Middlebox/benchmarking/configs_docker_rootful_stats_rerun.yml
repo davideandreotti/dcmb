@@ -1,6 +1,7 @@
 campaign:
   name: huge_comparison_full_docker_rootful_60s
   output_root: experiments
+  # Final paper: use >=5 runs/point, 10 for noisy p99 points; startup-only uses 20-30.
   runs: 1
   duration_s: 60
   warmup_s: 1

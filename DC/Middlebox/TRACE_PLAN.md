@@ -1,31 +1,32 @@
-# Trace Remaining Work
+# Trace Status And Remaining Work
 
 Current state:
 
 - `internal/trace` exists with build-tagged no-op/active implementations.
 - `cmd/client`, `cmd/gateway`, and `cmd/middlebox` accept `-trace`, `-trace-buffer-events`, and `-trace-drop-on-full`.
 - Client, gateway, Docker container lifecycle, and middlebox worker paths have trace probes.
+- Successful client TLS callbacks also emit `client_tls_resumed` with argument
+  `1` for a resumed handshake and `0` for a full handshake.
+- Full and empty middlebox builds emit schema-compilation start/done events
+  before worker readiness.
 - Docker workers can write per-worker trace files when `DOCKER_WORKER_TRACE_ENABLED=true`.
 - `cmd/tracecsv` converts binary trace files to CSV.
 - `compile.sh` builds trace-enabled binaries with `-tags trace`.
+- Client, gateway, and middlebox emit additive canonical TCP connection-key
+  bindings. The middlebox emits a unique delegation ID, binds it to the worker
+  connection, sends it to certserver, and certserver uses it for concurrent
+  quote/DC-generation events.
+- Gateway splice first-byte events and middlebox upstream/downstream boundary
+  events are implemented.
+
+## Current Certserver Instrumentation
+
+`cmd/certserver` now supports the common trace flags and records request,
+delegated-credential generation, quote verification, response, and error events.
+Legacy SNI events remain unchanged. New `*_by_id` events use the unique
+delegation ID and support concurrent correlation.
 
 ## Missing Instrumentation
-
-### Certserver
-
-Add trace support to `cmd/certserver`:
-
-- Add the common trace flags.
-- Call `trace.Start(...)` and `trace.Stop()`.
-- Mark `/certs` request received.
-- Mark delegated credential generation start/done.
-- Mark response written.
-- Mark errors.
-
-Potential correlation:
-
-- The middlebox cannot receive the client HTTP `X-Trace-ID` before the TLS handshake completes, so delegation/certserver events are currently best correlated by time and SNI.
-- If needed later, add a middlebox-generated delegation ID and send it to certserver in the `/certs` JSON body or an HTTP header.
 
 ### Request Server
 
@@ -37,6 +38,54 @@ Instrument the final application/request server:
 - error
 
 If the request server remains Python, either add a small compatible binary writer there or write CSV directly with the same event names.
+
+Add request correlation by reading and recording `X-Trace-ID`. Also add explicit
+application-processing start/done and response-first/last-byte events.
+
+### End-To-End Flow Correlation (Implemented Locally)
+
+One client request ID cannot naturally be visible everywhere before the TLS
+handshake: the gateway is an encrypted L4 proxy, and the middlebox contacts the
+certserver during TLS before it has received HTTP headers. Do not force the
+request ID into SNI or add a benchmark-only TLS extension.
+
+The implementation uses linked identifiers:
+
+1. The client keeps the existing request trace ID and records the TCP local and
+   remote tuple when a connection is created.
+2. The gateway records both accepted client-side and dialed worker-side socket
+   tuples under its connection ID.
+3. The middlebox records its TLS connection tuple. When HTTP headers arrive, it
+   emits a binding event between that connection ID and `X-Trace-ID`.
+4. The middlebox creates a delegation ID for each certserver call, emits a
+   binding from TLS connection ID to delegation ID, and sends the delegation ID
+   to certserver in the request body/header.
+5. Pending final touch: the application server records the forwarded
+   `X-Trace-ID`.
+
+The plotting analysis resolves these bindings into one canonical flow ID, so
+the final processed table can present one request flow even though transport,
+TLS delegation, and HTTP layers use different native identifiers.
+
+The merge must preserve both the canonical request ID and each native ID. It
+must never join solely on timestamps. For persistent connections, multiple
+request IDs bind to one TLS connection ID; for fresh/resumption, one measured
+request normally binds to one connection ID. Delegation IDs bind the certserver
+work to the TLS connection that requested it.
+
+The client-side `client_tls_resumed` event preserves the existing
+`client_tls_done` error argument. The following dissection events are now
+implemented:
+
+- middlebox upstream request-sent and response-first-byte events;
+- middlebox downstream response-first/last-byte events;
+- gateway first-byte events in both splice directions.
+
+Still add a clock-synchronization record/check for every participating host.
+
+Without synchronized clocks, only durations measured within one process/host
+and client end-to-end latency are safe. Cross-host one-way segments must remain
+an explicit `network/unattributed` remainder.
 
 ## Missing Shutdown Cases
 
@@ -68,7 +117,11 @@ Still useful to add:
 
 ## Operational Notes
 
-Worker trace files may stay empty while the worker process is still alive because the writer is buffered. They should become non-empty after the worker exits gracefully or the gateway removes it gracefully.
+Worker trace files may stay empty while the worker process is still alive
+because the writer is buffered. SGX worker teardown now sends `SIGTERM`, which
+Gramine injects into the Go application, waits up to three seconds for a clean
+exit, and only then falls back to forced removal. The controlled Docker+SGX
+trace smoke verifies that worker traces are non-empty after teardown.
 
 For Docker worker traces:
 

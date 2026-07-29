@@ -146,6 +146,14 @@ build_docker_images() {
         -t dcmiddlebox-worker:sgxgo \
         "$PROJECT_ROOT"
 
+    if [[ "${BUILD_STARTUP_IMAGE:-0}" == "1" ]]; then
+        echo "[COMPILE] building startup-only dcmiddlebox-worker:sgx-standard-startup"
+        docker build \
+            -f "$SCRIPT_DIR/Dockerfile.worker_sgx_startup" \
+            -t dcmiddlebox-worker:sgx-standard-startup \
+            "$PROJECT_ROOT"
+    fi
+
     echo "[COMPILE] OK: docker images dcmiddlebox-worker:baseline dcmiddlebox-worker:emptyhandler dcmiddlebox-worker:sgxgo dcmb_gateway:docker"
 }
 

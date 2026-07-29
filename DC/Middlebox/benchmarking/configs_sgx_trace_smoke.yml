@@ -1,6 +1,7 @@
 campaign:
   name: sgx_trace_smoke
   output_root: experiments
+  # Final paper: use >=5 runs/point, 10 for noisy p99 points; startup-only uses 20-30.
   runs: 1
   duration_s: 5
   warmup_s: 1

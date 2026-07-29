@@ -17,6 +17,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/http/httputil"
 	"net/url"
 	"os"
@@ -29,6 +30,7 @@ import (
 
 	"dc/middlebox/internal/ticketidentity"
 	benchtrace "dc/middlebox/internal/trace"
+	"dc/middlebox/internal/tracebind"
 )
 
 const (
@@ -62,10 +64,46 @@ type delegationMaterial struct {
 
 type traceIDContextKey struct{}
 type validationResultContextKey struct{}
+type connectionKeyContextKey struct{}
 
 type validationResult struct {
 	user        string
 	messageType any
+}
+
+type traceResponseWriter struct {
+	http.ResponseWriter
+	traceID string
+	wrote   bool
+}
+
+func (w *traceResponseWriter) markFirst() {
+	if w.wrote {
+		return
+	}
+	w.wrote = true
+	benchtrace.Mark(benchtrace.MiddleboxDownstreamResponseFirst, w.traceID, 0)
+}
+
+func (w *traceResponseWriter) WriteHeader(statusCode int) {
+	w.markFirst()
+	w.ResponseWriter.WriteHeader(statusCode)
+}
+
+func (w *traceResponseWriter) Write(p []byte) (int, error) {
+	w.markFirst()
+	return w.ResponseWriter.Write(p)
+}
+
+func (w *traceResponseWriter) Flush() {
+	w.markFirst()
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (w *traceResponseWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
 }
 
 type operatorState struct {
@@ -96,7 +134,21 @@ var (
 	certMu            sync.RWMutex
 	delegationFetchMu sync.Mutex
 	firstDCDiscarded  atomic.Bool
+	delegationCounter atomic.Uint64
+	connectionCounter atomic.Uint64
+	operatorTraceID   string
 )
+
+func nextDelegationID() string {
+	return fmt.Sprintf("%s-dc-%d", operatorTraceID, delegationCounter.Add(1))
+}
+
+func errorArg(err error) uint64 {
+	if err != nil {
+		return 1
+	}
+	return 0
+}
 
 func newTicketSessionStore(identityKey string, operatorID string) *ticketSessionStore {
 	identityKey = strings.TrimSpace(identityKey)
@@ -171,11 +223,13 @@ func cacheFetchedDelegation(sni string, cert *tls.Certificate) bool {
 	return true
 }
 
-func writeAttestation(tag string) ([]byte, error) {
+func writeAttestation(tag string, delegationID string) ([]byte, error) {
 	benchtrace.Mark(benchtrace.MiddleboxAttestationStart, tag, 0)
+	benchtrace.Mark(benchtrace.MiddleboxAttestationStartByID, delegationID, 0)
 	attType, err := os.ReadFile("/dev/attestation/attestation_type")
 	if err != nil {
 		benchtrace.Mark(benchtrace.MiddleboxAttestationDone, tag, 1)
+		benchtrace.Mark(benchtrace.MiddleboxAttestationDoneByID, delegationID, 1)
 		return nil, fmt.Errorf("failed to read /dev/attestation/attestation_type: %w", err)
 	}
 
@@ -190,18 +244,21 @@ func writeAttestation(tag string) ([]byte, error) {
 
 	if err := os.WriteFile("/dev/attestation/user_report_data", reportData[:], 0); err != nil {
 		benchtrace.Mark(benchtrace.MiddleboxAttestationDone, tag, 2)
+		benchtrace.Mark(benchtrace.MiddleboxAttestationDoneByID, delegationID, 2)
 		return nil, fmt.Errorf("failed to write /dev/attestation/user_report_data: %w", err)
 	}
 
 	quote, err := os.ReadFile("/dev/attestation/quote")
 	if err != nil {
 		benchtrace.Mark(benchtrace.MiddleboxAttestationDone, tag, 3)
+		benchtrace.Mark(benchtrace.MiddleboxAttestationDoneByID, delegationID, 3)
 		return nil, fmt.Errorf("failed to read /dev/attestation/quote: %w", err)
 	}
 
 	fmt.Printf("quote_size=%d\n", len(quote))
 	// fmt.Printf("quote_base64=%s\n", base64.StdEncoding.EncodeToString(quote))
 	benchtrace.Mark(benchtrace.MiddleboxAttestationDone, tag, uint64(len(quote)))
+	benchtrace.Mark(benchtrace.MiddleboxAttestationDoneByID, delegationID, uint64(len(quote)))
 	return quote, nil
 }
 
@@ -290,13 +347,24 @@ func parseDelegatedPrivateKey(keyPEM []byte) (any, error) {
 	return nil, fmt.Errorf("unable to parse delegated private key")
 }
 
-func fetchDelegationMaterial(sni string) (*delegationMaterial, error) {
+func fetchDelegationMaterial(sni string, delegationID string, connectionKey uint64) (_ *delegationMaterial, resultErr error) {
 	benchtrace.Mark(benchtrace.MiddleboxDelegationFetch, sni, 0)
-	payload := map[string]string{"sni": sni}
+	benchtrace.Mark(benchtrace.MiddleboxDelegationFetchByID, delegationID, 0)
+	if connectionKey != 0 {
+		benchtrace.Mark(benchtrace.MiddleboxDelegationConnectionBind, delegationID, connectionKey)
+	}
+	defer func() {
+		arg := uint64(0)
+		if resultErr != nil {
+			arg = 1
+		}
+		benchtrace.Mark(benchtrace.MiddleboxDelegationFetchedByID, delegationID, arg)
+	}()
+	payload := map[string]string{"sni": sni, "delegation_id": delegationID}
 
 	if os.Getenv("MBX_EMIT_QUOTE") == "1" {
 		t0 := time.Now()
-		att, err := writeAttestation("middlebox-attestation-test")
+		att, err := writeAttestation("middlebox-attestation-test", delegationID)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "attestation failed: %v\n", err)
 			os.Exit(1)
@@ -432,7 +500,8 @@ func getOrFetchCertificate(chi *tls.ClientHelloInfo) (*tls.Certificate, error) {
 	}
 
 	benchtrace.Mark(benchtrace.MiddleboxDelegationMiss, sni, 0)
-	material, err := fetchDelegationMaterial(sni)
+	connectionKey, _ := chi.Context().Value(connectionKeyContextKey{}).(uint64)
+	material, err := fetchDelegationMaterial(sni, nextDelegationID(), connectionKey)
 	if err != nil {
 		return nil, err
 	}
@@ -547,9 +616,9 @@ func prefetchIfNeeded(st *operatorState, defaultSNI string) {
 		defaultSNI = expectedSNI
 	}
 
-	material, err := fetchDelegationMaterial(defaultSNI)
+	material, err := fetchDelegationMaterial(defaultSNI, nextDelegationID(), 0)
 	if err != nil {
-		info(fmt.Sprintf("[OPERATOR] auth prefetch failed: %v", err))
+		log.Printf("[OPERATOR] auth prefetch failed: %v", err)
 		return
 	}
 
@@ -605,8 +674,16 @@ func main() {
 
 	mode := strings.ToLower(*operatorModeFlag)
 	operatorID := *operatorIDFlag
+	operatorTraceID = operatorID
 	defaultSNI := *defaultSNIFlag
 	ticketStore := newTicketSessionStore(os.Getenv("DCMB_TICKET_IDENTITY_KEY"), operatorID)
+
+	benchtrace.Mark(benchtrace.MiddleboxSchemaCompileStart, operatorID, 0)
+	if err := initializeValidation(); err != nil {
+		benchtrace.Mark(benchtrace.MiddleboxSchemaCompileDone, operatorID, 1)
+		log.Fatalf("validation initialization failed: %v", err)
+	}
+	benchtrace.Mark(benchtrace.MiddleboxSchemaCompileDone, operatorID, 0)
 
 	st := &operatorState{
 		id:               operatorID,
@@ -680,7 +757,7 @@ func main() {
 			traceID = st.id
 		}
 		benchtrace.Mark(benchtrace.MiddleboxProxyError, traceID, 1)
-		info(fmt.Sprintf("[OPERATOR] upstream error: %v", err))
+		log.Printf("[OPERATOR] upstream error trace_id=%s: %v", traceID, err)
 		http.Error(w, "bad gateway", http.StatusBadGateway)
 	}
 
@@ -706,12 +783,20 @@ func main() {
 		if traceID == "" {
 			traceID = st.id
 		}
+		connectionKey, _ := r.Context().Value(connectionKeyContextKey{}).(uint64)
+		if connectionKey != 0 {
+			benchtrace.Mark(benchtrace.MiddleboxTraceConnectionBind, traceID, connectionKey)
+		}
+		tracedWriter := &traceResponseWriter{ResponseWriter: w, traceID: traceID}
+		w = tracedWriter
+		defer benchtrace.Mark(benchtrace.MiddleboxDownstreamResponseDone, traceID, 0)
 		benchtrace.Mark(benchtrace.MiddleboxRequestStart, traceID, 0)
 		benchtrace.Mark(benchtrace.MiddleboxValidationStart, traceID, 0)
 		valid, user, messageType := processRequest(r)
 		if !valid {
 			benchtrace.Mark(benchtrace.MiddleboxValidationDone, traceID, 1)
 			benchtrace.Mark(benchtrace.MiddleboxRequestDone, traceID, 1)
+			log.Printf("[OPERATOR] request validation failed trace_id=%s method=%s path=%s", traceID, r.Method, r.URL.Path)
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
@@ -745,6 +830,14 @@ func main() {
 		r = r.WithContext(context.WithValue(r.Context(), validationResultContextKey{}, validationResult{
 			user:        user,
 			messageType: messageType,
+		}))
+		r = r.WithContext(httptrace.WithClientTrace(r.Context(), &httptrace.ClientTrace{
+			WroteRequest: func(info httptrace.WroteRequestInfo) {
+				benchtrace.Mark(benchtrace.MiddleboxUpstreamRequestSent, traceID, errorArg(info.Err))
+			},
+			GotFirstResponseByte: func() {
+				benchtrace.Mark(benchtrace.MiddleboxUpstreamResponseFirst, traceID, 0)
+			},
 		}))
 		proxy.ServeHTTP(w, r)
 		benchtrace.Mark(benchtrace.MiddleboxRequestDone, traceID, 0)
@@ -808,18 +901,23 @@ func main() {
 		Addr:      operatorTLSAddr,
 		Handler:   handler,
 		TLSConfig: tlsConfig,
+		ConnContext: func(ctx context.Context, conn net.Conn) context.Context {
+			connectionKey := tracebind.ConnectionKey(conn.LocalAddr(), conn.RemoteAddr())
+			connectionID := fmt.Sprintf("%s-conn-%d", st.id, connectionCounter.Add(1))
+			benchtrace.Mark(benchtrace.MiddleboxConnectionAccepted, connectionID, connectionKey)
+			return context.WithValue(ctx, connectionKeyContextKey{}, connectionKey)
+		},
 	}
 
 	ln, err := net.Listen("tcp", operatorTLSAddr)
 	if err != nil {
 		log.Fatal(err)
 	}
+	shutdownCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
 
 	info(fmt.Sprintf("[OPERATOR] %s mode=%s listening on %s", operatorID, mode, operatorTLSAddr))
 	fmt.Fprintf(os.Stderr, "[OPERATOR_READY] listening=%s mode=%s id=%s\n", operatorTLSAddr, mode, operatorID)
-
-	shutdownCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stopSignals()
 
 	go func() {
 		<-shutdownCtx.Done()
@@ -828,7 +926,7 @@ func main() {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		if err := srv.Shutdown(ctx); err != nil {
-			info("[OPERATOR] graceful shutdown failed: " + err.Error())
+			log.Printf("[OPERATOR] graceful shutdown failed: %v", err)
 			_ = srv.Close()
 		}
 	}()

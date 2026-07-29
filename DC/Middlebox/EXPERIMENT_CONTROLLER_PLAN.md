@@ -218,17 +218,78 @@ For local deployments:
 - Use `psutil` for direct child processes.
 - Write process user/system CPU time plus memory fields:
   - `rss_bytes`
-  - `vms_bytes`
   - `num_threads`
-  - process-tree totals: `rss_tree_bytes`, `vms_tree_bytes`, `num_threads_tree`, and `children_count`
+  - process-tree totals: `rss_tree_bytes`, `num_threads_tree`, and `children_count`
 - The process-tree totals matter for wrapper-style deployments such as Gramine.
-- For Docker/Podman mode, monitor the runtime machinery as a whole:
+- Gramine runs all threads of one Gramine process in the same enclave and host
+  process. Host process CPU time therefore includes those threads. If the
+  application creates Gramine child processes, each child is a separate host
+  process/enclave and its CPU time must be added recursively. Existing middlebox
+  samples report `children_count=0`, but the monitor should still record
+  `user_time_tree_s` and `system_time_tree_s` for correctness.
+- For Docker/Podman mode, monitor the middlebox machinery as a whole:
   - gateway container CPU/memory
-  - optionally total CPU/memory of all containers matching `dcmb_gateway` and `dcmb-worker-*`
-- Current first-pass Docker resource monitoring uses `docker stats`, which can be heavy and has already timed out under load. If Docker runs look slower or noisier than expected, replace this with lighter direct accounting:
-  - whole-machine `/proc/stat` for total system CPU
-  - Docker/containerd/shim process stats via `/proc/<pid>/stat`
-  - optionally container cgroup files such as `cpu.stat`, `memory.current`, and `pids.current`
+  - all worker-container CPU/memory for the current run
+- Current Docker resource monitoring uses cgroup v2 directly. It refreshes the
+  running container ID/name map once per second, enumerates active Docker
+  cgroups at every sample for `scope: all`, reads `cpu.stat`,
+  `memory.current`, and `pids.current`, and writes both per-container and
+  aggregate CSVs. This avoids repeatedly spawning `docker stats` and continues
+  to follow short-lived replacement workers; the slower runtime query is used
+  only to attach human-readable names.
+
+The existing sum of `docker/podman stats` values is conceptually valid when the
+runtime contains only the experimental gateway and workers. Its problems are
+operational and cross-runtime consistency: the controller launches `ps` and
+`stats --no-stream` every sample, CLI/daemon work can perturb the benchmark,
+dynamic containers can appear between discovery and sampling, and Docker and
+Podman may report memory/cache with different semantics.
+
+Current decision: cgroup v2 is available on the local Docker host and is the
+default Docker collector (`source=docker_cgroup_v2`). Cgroup v2 is unavailable
+on the rootful Podman target, so Podman keeps one persistent
+`podman stats --all` stream and automatically falls back to the old
+`--no-stream` sampler. Verify that stream on Bovisa before final runs.
+
+Archived alternative for a future cgroup-v2 host: start the gateway under one
+run-scoped parent and make workers use the same `CgroupParent`, then sample:
+
+```text
+cpu.stat:       parent usage_usec delta / wall-time delta -> aggregate CPU %
+memory.current: instantaneous parent/descendant bytes
+pids.current:   instantaneous parent/descendant task count
+```
+
+The parent counters include descendant worker cgroups, continue to exist while
+short-lived workers are created and removed, and avoid both discovery races and
+double-counting. Compute aggregate CPU percentage as:
+
+```text
+100 * delta(cpu.stat.usage_usec) / delta(wall_time_usec)
+```
+
+Read `memory.current` and `pids.current` as instantaneous values. This collector
+uses ordinary file reads and does not invoke the runtime CLI at every sample.
+
+Future cgroup-v2 implementation notes:
+
+- create a unique cgroup parent per run;
+- pass it to the gateway container (`--cgroup-parent`);
+- add `CgroupParent` to the gateway's worker `HostConfig` so all workers are
+  descendants of the same parent;
+- locate the resulting host path once, accounting for the active systemd or
+  cgroupfs driver;
+- record cumulative CPU, cgroup memory, and task count at the existing
+  sample interval;
+- remove the parent only after the gateway and workers are gone and the final
+  sample is written;
+- retain the current stats collector as a temporary fallback for unsupported
+  or rootless configurations.
+
+This measures the requested gateway plus worker machinery. It deliberately does
+not include `dockerd`, the Podman API service, `conmon`, AESM, or PCCS. Those are
+host services and should be added only if the paper makes a broader whole-runtime
+or whole-host claim.
 
 For remote deployments:
 
@@ -266,6 +327,11 @@ For each matrix combination:
 17. Sleep `cooldown_s`.
 18. Append basic run metadata/status to `summary.csv`.
 
+Final paper campaign comments next to `campaign.runs` should state the intended
+repetition policy: at least 5 runs per normal point, 10 for noisy p99 points,
+and 20-30 starts per startup-only category. The checked-in example values may
+remain small for smoke tests.
+
 Metrics such as errors, saturation, latency breakdowns, and detailed throughput can be derived later from client output and trace CSVs. The controller should mainly preserve raw data reliably.
 
 ## Trace Conversion
@@ -298,7 +364,8 @@ Start small:
 
 1. Local-only controller with YAML matrix. Done in `benchmarking/run.py`.
 2. Bare metal and Docker gateway deployments. Done for first pass.
-3. Local CPU monitoring. Done for direct processes, plus Docker stats for gateway/worker machinery.
+3. Local CPU monitoring. Done for direct processes, Docker cgroup-v2 accounting
+   for gateway/worker machinery, and a Podman stats-stream fallback.
 4. Trace path management and automatic bin-to-CSV conversion. Done for local runs.
 5. Cleanup/cooldown between runs. Done for first pass.
 
@@ -307,8 +374,83 @@ Then add:
 1. Direct client-to-server baseline deployment. Done for local first pass.
 2. Gramine SGX deployment with full-validation and empty-handler manifests. Done for local first pass.
 3. Certserver-side quote verification in the Go certserver. Done with the DCAP cgo verifier path.
-4. Process memory collection with RSS/VMS/thread fields and process-tree totals. Done for local first pass.
+4. Process memory collection with RSS/thread fields and process-tree totals. Done for local first pass.
 5. Normal-campaign startup CSV for process readiness, gateway readiness, first Docker worker readiness, and per-worker internal startup. Done for local first pass.
+
+## Remaining Final-Experiment Work
+
+1. Done locally: Docker uses direct cgroup-v2 samples and records
+   `source=docker_cgroup_v2` in `metadata.json`. Podman uses one persistent
+   `podman stats --all` stream, with the existing `--no-stream` sampler as its
+   fallback. Before Bovisa paper runs, verify that rootful Podman reports
+   `source=podman_stats_stream` and that newly created workers appear.
+2. Keep multi-machine orchestration and clock-synchronization validation as a
+   separate pass.
+3. Done: additive client/gateway/worker connection bindings and per-delegation
+   IDs are emitted without changing old event codes. Request-server tracing is
+   deliberately deferred as a final touch; until then its cost stays in the
+   dissection residual. Also recheck direct persistent connection reuse against
+   the final application server before the paper campaign.
+4. Done: `campaign.startup_only` skips servers, monitors, and client traffic;
+   `configs_startup.yml` measures native, Gramine, SGX-Go, container, and both
+   container+SGX startup paths. `dcmiddlebox-worker:sgx-standard-startup` is a
+   startup-only image enabled with `BUILD_STARTUP_IMAGE=1` and must not be used
+   for runtime campaigns.
+5. Done for the current local format: the controller already preserves run
+   status/client return codes and the client/gateway logs contain late slots,
+   non-2xx responses, transport errors, and drops. The plotting normalizer now
+   consumes these sources and marks affected points without requiring a
+   `run.py` rewrite.
+
+Prepared paper campaign files:
+
+- `benchmarking/configs.yml`: single client, offered-rate sweep, full strategy
+  and ablation matrix, including container resumption.
+- `benchmarking/configs_clients_scalability.yml`: persistent/resumption client
+  count and offered-rate sweep across representative strategies.
+- `benchmarking/configs_startup.yml`: startup-only campaign, currently one
+  smoke start/category; raise it to 20-30 starts/category for paper results.
+
+## Local Command Sequence
+
+Build all runtime artifacts, including the startup-only Gramine image:
+
+```bash
+cd /home/bonsai/dcmb/DC/Middlebox
+BUILD_STARTUP_IMAGE=1 ./compile.sh
+```
+
+Quick integration passes (one short rate point plus focused resumption/SGX
+container checks):
+
+```bash
+python3 benchmarking/run.py -c benchmarking/configs_all_deployments_rate10_15s.yml
+python3 benchmarking/run.py -c benchmarking/configs_docker_resumption_smoke.yml
+python3 benchmarking/run.py -c benchmarking/configs_docker_sgxgo_smoke.yml
+python3 benchmarking/run.py -c benchmarking/configs_docker_sgxgo_trace.yml
+python3 benchmarking/run.py -c benchmarking/configs_startup.yml
+```
+
+Focused reruns for the repaired resource/startup paths:
+
+```bash
+python3 benchmarking/run.py -c benchmarking/configs_docker_stats_smoke.yml
+python3 benchmarking/run.py -c benchmarking/configs_startup_problematic.yml
+```
+
+Final local campaigns:
+
+```bash
+python3 benchmarking/run.py -c benchmarking/configs.yml
+python3 benchmarking/run.py -c benchmarking/configs_clients_scalability.yml
+python3 benchmarking/run.py -c benchmarking/configs_startup.yml
+```
+
+Plot any completed campaign with:
+
+```bash
+python3 benchmarking/plot_latency.py experiments/<campaign-directory>
+```
 
 ## Next: Docker Workers Running SGX-Go Middleboxes
 
@@ -407,10 +549,12 @@ DOCKER_WORKER_SGX_PROVISION_DEVICE=/dev/sgx_provision
 DOCKER_WORKER_AESM_DIR=/var/run/aesmd
 ```
 
-The deployment entry should select the SGX worker image explicitly:
+The deployment entry should select the SGX worker image explicitly. Runtime
+campaigns use the quote-enabled form consistently; quote-disabled SGX-Go is not
+a separate paper strategy because quote cost is extracted from trace events.
 
 ```yaml
-- name: docker_sgxgo_quote
+- name: docker_sgxgo_full_noreuse
   kind: docker_gateway
   worker_image: dcmiddlebox-worker:sgxgo
   worker_sgx_enabled: true
@@ -421,7 +565,10 @@ The deployment entry should select the SGX worker image explicitly:
   container_stats_scope: all
 ```
 
-A no-quote variant can be expressed by setting `worker_emit_quote: "0"`.
+Per-worker traces stay disabled in throughput and scalability campaigns. Use
+`configs_docker_sgxgo_trace.yml` for a one-worker controlled trace that captures
+quote generation and verification without producing a trace file per worker in
+the large matrix.
 
 ### Validation Steps
 
@@ -441,8 +588,69 @@ A no-quote variant can be expressed by setting `worker_emit_quote: "0"`.
 
 - Remote SSH wrapper and log copy for multi-node experiments.
 - Clock synchronization metadata/checks for cross-node trace correlation.
-- Startup-only microbenchmark script for repeated baremetal, SGX, single-container, and parallel-container startup measurements.
-- Request server rewrite or instrumentation in Go so it can use the same binary trace format.
+- Startup-only campaign is implemented in `configs_startup.yml`; only a
+  parallel-container startup study remains optional.
+- Instrument the current Python request server with the same event names and
+  `X-Trace-ID` first. Do not rewrite it in Go solely for tracing; reconsider a
+  Go rewrite only if server-side overhead becomes a measured bottleneck or a
+  common binary writer is worth the maintenance change.
 - Throughput/resource plotting: offered vs achieved throughput, saturation/errors, CPU and memory over time, and CPU/memory versus offered rate.
-- Podman runtime adapter.
+- Verify the implemented rootful Podman stats stream on the Bovisa Podman
+  version and retain the recorded fallback source in paper artifacts.
 - CSV merge/duration analysis helpers.
+
+## Final Campaign Memo
+
+- Normal strategy/rate plots filter to `clients=1`.
+- Scalability campaigns preserve client count as an analysis dimension.
+- Resumption is a container-strategy experiment in the current design; do not
+  require direct, bare-metal, or shared-Gramine resumption runs.
+- Use 5 independent runs per throughput point, increasing to 10 for unstable
+  p99 results; use 20-30 starts per startup category.
+- The current first-pass files intentionally use one 30-second repetition. The
+  single-client matrix uses rates `[1, 5, 10, 50, 100, 500, 1000]` for fresh
+  connections and `[1, 10, 100, 1000, 5000]` for persistent/resumption. The
+  scalability matrix uses clients `[1, 5, 10, 50]`.
+- Standalone/shared `middlebox_sgxgo` is excluded from runtime and startup
+  campaigns. SGX-Go is evaluated only as the worker inside the container
+  strategy; shared Gramine uses the standard `middlebox` binary.
+- Docker+SGX-Go runtime deployments always set `worker_emit_quote: "1"`.
+- Rotate experiment order between repetitions to reduce thermal/cache/time drift.
+- Keep controller-failed runs and traces for diagnostics, but mark them in
+  metadata so aggregate analysis can exclude partial windows.
+- Remote SSH execution, per-node resource collection, result copy, and clock
+  synchronization verification remain required for the final multi-node pass.
+
+## Runtime Robustness Status (2026-07-29)
+
+Implemented after the first paper campaigns:
+
+- Client HTTP operations have a fixed 5-second deadline. Fresh-mode scheduling
+  still uses the 1024-request in-flight bound, but an overloaded run can now
+  drain and terminate instead of retaining requests indefinitely.
+- Persistent/resumption staggered clients stop waiting when the measurement
+  deadline arrives. At low offered rates, fewer logical clients may
+  legitimately participate because the run contains fewer request slots than
+  configured clients; this is recorded rather than hidden.
+- Client reports now record timeouts, scheduled/offered ratio, participating
+  clients, estimated clients required at measured p99, peak in-flight work, and
+  machine-readable quality flags.
+- The controller marks nonzero client exits and early middlebox/gateway exits
+  as failed, with `failure_reason` in campaign summary and run metadata.
+- Docker campaigns with `prewarm_for_clients: true` wait for an explicit
+  `[GATEWAY_POOL_READY]` line. Initial/max pool sizes are one worker for fresh,
+  `clients + 1` for persistent (the extra worker absorbs the isolated client
+  warmup), and `clients` for resumption.
+- Performance configs use `-log_level error -minimal_logs=true`. Readiness,
+  startup/listener failures, validation initialization/failures, delegation
+  prefetch failures, upstream proxy failures, trace startup, shutdown receipt,
+  and shutdown failures remain visible through unconditional stderr/log calls.
+
+Focused diagnostic reruns are available as:
+
+```text
+benchmarking/configs_rerun_client_deadline.yml
+benchmarking/configs_rerun_sgx_limits.yml
+benchmarking/configs_rerun_container_prewarm.yml
+benchmarking/configs_rerun_validation_logging.yml
+```

@@ -64,7 +64,7 @@ type dockerBackend struct {
 	workerSGXProvisionDevice    string
 	workerAESMDir               string
 	workerEmitQuote             string
-	workerSIGINTTimeout         time.Duration
+	workerSignalTimeout         time.Duration
 
 	minReady       int
 	scaleUpBy      int
@@ -76,14 +76,15 @@ type dockerBackend struct {
 	readyDialTimeout time.Duration
 	refillPeriod     time.Duration
 
-	mu       sync.Mutex
-	workers  map[string]*dockerWorker
-	ready    []string
-	leased   map[string]struct{}
-	bound    map[string]struct{}
-	creating int
-	counter  atomic.Int64
-	createWG sync.WaitGroup
+	mu        sync.Mutex
+	workers   map[string]*dockerWorker
+	ready     []string
+	leased    map[string]struct{}
+	bound     map[string]struct{}
+	creating  int
+	counter   atomic.Int64
+	createWG  sync.WaitGroup
+	poolReady sync.Once
 
 	shuttingDown bool
 
@@ -211,7 +212,7 @@ func newDockerBackendFromEnv() (*dockerBackend, error) {
 		workerSGXProvisionDevice:    strings.TrimSpace(getEnv("DOCKER_WORKER_SGX_PROVISION_DEVICE", "/dev/sgx_provision")),
 		workerAESMDir:               strings.TrimSpace(getEnv("DOCKER_WORKER_AESM_DIR", "/var/run/aesmd")),
 		workerEmitQuote:             strings.TrimSpace(os.Getenv("DOCKER_WORKER_EMIT_QUOTE")),
-		workerSIGINTTimeout:         envDurationMs("DOCKER_WORKER_SIGINT_TIMEOUT_MS", 250),
+		workerSignalTimeout:         envDurationMs("DOCKER_WORKER_SIGNAL_TIMEOUT_MS", getEnvInt("DOCKER_WORKER_SIGINT_TIMEOUT_MS", 3000)),
 
 		minReady:       minReady,
 		scaleUpBy:      scaleUpBy,
@@ -434,6 +435,7 @@ func (d *dockerBackend) createReadyWorker() {
 	worker, err := d.createAndWaitReady()
 
 	var removeAfterCreate bool
+	readyCount := 0
 	d.mu.Lock()
 	d.creating--
 	if err == nil {
@@ -442,6 +444,7 @@ func (d *dockerBackend) createReadyWorker() {
 		} else {
 			d.workers[worker.name] = worker
 			d.ready = append(d.ready, worker.name)
+			readyCount = len(d.ready)
 		}
 	}
 	d.mu.Unlock()
@@ -453,6 +456,11 @@ func (d *dockerBackend) createReadyWorker() {
 		go d.removeWorker(worker, true)
 	} else {
 		info(fmt.Sprintf("[GATEWAY] docker worker ready name=%s ip=%s startup_ms=%d", worker.name, worker.ip, time.Since(start).Milliseconds()))
+		if d.minReady > 0 && readyCount >= d.minReady {
+			d.poolReady.Do(func() {
+				fmt.Fprintf(os.Stderr, "[GATEWAY_POOL_READY] ready=%d target=%d\n", readyCount, d.minReady)
+			})
+		}
 	}
 
 	d.triggerRefill()
@@ -849,7 +857,7 @@ func (d *dockerBackend) removeContainerIDContext(ctx context.Context, containerI
 	benchtrace.Mark(benchtrace.GatewayContainerRemove, containerID, 0)
 	forceRemove := false
 	if d.workerSGXEnabled {
-		forceRemove = !d.interruptContainerContext(ctx, containerID, reason)
+		forceRemove = !d.terminateContainerContext(ctx, containerID, reason)
 	} else {
 		stopPath := "/containers/" + containerID + "/stop?t=1"
 		stopErr := d.api.do(ctx, http.MethodPost, stopPath, nil, nil)
@@ -876,29 +884,29 @@ func (d *dockerBackend) removeContainerIDContext(ctx context.Context, containerI
 	benchtrace.Mark(benchtrace.GatewayContainerRemoved, containerID, 0)
 }
 
-func (d *dockerBackend) interruptContainerContext(ctx context.Context, containerID string, reason string) bool {
-	killPath := "/containers/" + containerID + "/kill?signal=SIGINT"
+func (d *dockerBackend) terminateContainerContext(ctx context.Context, containerID string, reason string) bool {
+	killPath := "/containers/" + containerID + "/kill?signal=SIGTERM"
 	err := d.api.do(ctx, http.MethodPost, killPath, nil, nil)
 	if errors.Is(err, errDockerNotFound) || isDockerAPIStatus(err, http.StatusNotModified) {
 		return true
 	}
 	if err != nil && !errors.Is(err, errDockerNotFound) && !isDockerAPIStatus(err, http.StatusNotModified) {
-		info("[GATEWAY] docker sigint failed reason=" + reason + " id=" + containerID + " err=" + err.Error())
+		info("[GATEWAY] docker sigterm failed reason=" + reason + " id=" + containerID + " err=" + err.Error())
 		return false
 	}
 
-	deadline := time.Now().Add(d.workerSIGINTTimeout)
+	deadline := time.Now().Add(d.workerSignalTimeout)
 	for time.Now().Before(deadline) {
 		running, statusErr := d.containerRunning(containerID)
 		if errors.Is(statusErr, errDockerNotFound) || (statusErr == nil && !running) {
 			return true
 		}
 		if statusErr != nil {
-			info("[GATEWAY] docker sigint status check failed reason=" + reason + " id=" + containerID + " err=" + statusErr.Error())
+			info("[GATEWAY] docker sigterm status check failed reason=" + reason + " id=" + containerID + " err=" + statusErr.Error())
 			return false
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	info("[GATEWAY] docker sigint timeout reason=" + reason + " id=" + containerID + " timeout=" + d.workerSIGINTTimeout.String())
+	info("[GATEWAY] docker sigterm timeout reason=" + reason + " id=" + containerID + " timeout=" + d.workerSignalTimeout.String())
 	return false
 }

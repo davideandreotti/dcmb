@@ -30,9 +30,17 @@ const (
 )
 
 type certRequest struct {
-	SNI      string `json:"sni"`
-	Quote    string `json:"quote"`
-	QuoteB64 string `json:"quote_b64"`
+	SNI          string `json:"sni"`
+	Quote        string `json:"quote"`
+	QuoteB64     string `json:"quote_b64"`
+	DelegationID string `json:"delegation_id"`
+}
+
+func (r certRequest) traceID() string {
+	if strings.TrimSpace(r.DelegationID) != "" {
+		return r.DelegationID
+	}
+	return r.SNI
 }
 
 type certResponse struct {
@@ -156,6 +164,7 @@ func (s *serverState) verifyAttestation(req certRequest) (int, string) {
 	quoteBytes, err := base64.StdEncoding.DecodeString(quoteB64)
 	if err != nil {
 		benchtrace.Mark(benchtrace.CertServerError, req.SNI, 11)
+		benchtrace.Mark(benchtrace.CertServerErrorByID, req.traceID(), 11)
 		fmt.Printf("[SERVER] Invalid attestation quote: %v\n", err)
 		return http.StatusBadRequest, "invalid attestation quote"
 	}
@@ -163,6 +172,7 @@ func (s *serverState) verifyAttestation(req certRequest) (int, string) {
 	fmt.Printf("[SERVER] Attestation quote received (%d bytes)\n", len(quoteBytes))
 	fmt.Printf("[SERVER] BeginQuoteVerification = %d ns\n", nowNS())
 	benchtrace.Mark(benchtrace.CertServerQuoteVerify, req.SNI, uint64(len(quoteBytes)))
+	benchtrace.Mark(benchtrace.CertServerQuoteVerifyByID, req.traceID(), uint64(len(quoteBytes)))
 	start := time.Now()
 	info, err := verifyQuote(quoteBytes, s.reportData)
 	elapsed := time.Since(start)
@@ -171,6 +181,7 @@ func (s *serverState) verifyAttestation(req certRequest) (int, string) {
 		doneArg = 1
 	}
 	benchtrace.Mark(benchtrace.CertServerQuoteDone, req.SNI, doneArg)
+	benchtrace.Mark(benchtrace.CertServerQuoteDoneByID, req.traceID(), doneArg)
 	fmt.Printf("[SERVER] quote verification ms=%.3f dcap_ret=0x%x qv_result=0x%x collateral_expiration=%d accepted_non_terminal=%v\n",
 		float64(elapsed.Microseconds())/1000,
 		info.DCAPReturn,
@@ -182,6 +193,7 @@ func (s *serverState) verifyAttestation(req certRequest) (int, string) {
 
 	if err != nil {
 		benchtrace.Mark(benchtrace.CertServerError, req.SNI, 12)
+		benchtrace.Mark(benchtrace.CertServerErrorByID, req.traceID(), 12)
 		fmt.Printf("[SERVER] Quote verification failed: %v\n", err)
 		return http.StatusForbidden, "quote verification failed"
 	}
@@ -205,9 +217,11 @@ func (s *serverState) handleCerts(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
+	benchtrace.Mark(benchtrace.CertServerRequestByID, req.traceID(), 0)
 	fmt.Printf("[SERVER] SNI requested: %s\n", req.SNI)
 	if strings.TrimSpace(req.SNI) == "" {
 		benchtrace.Mark(benchtrace.CertServerError, "certs", 2)
+		benchtrace.Mark(benchtrace.CertServerErrorByID, req.traceID(), 2)
 		http.Error(w, "missing sni", http.StatusBadRequest)
 		return
 	}
@@ -218,17 +232,21 @@ func (s *serverState) handleCerts(w http.ResponseWriter, r *http.Request) {
 
 	fmt.Printf("t5: [SERVER] - BeginAutoGenCerts = %d ns\n", nowNS())
 	benchtrace.Mark(benchtrace.CertServerGenerate, req.SNI, 0)
+	benchtrace.Mark(benchtrace.CertServerGenerateByID, req.traceID(), 0)
 	start := time.Now()
 	dcBytes, keyPEM, err := s.generateDelegation()
 	if err != nil {
 		benchtrace.Mark(benchtrace.CertServerGenerateDone, req.SNI, 1)
+		benchtrace.Mark(benchtrace.CertServerGenerateDoneByID, req.traceID(), 1)
 		benchtrace.Mark(benchtrace.CertServerError, req.SNI, 3)
+		benchtrace.Mark(benchtrace.CertServerErrorByID, req.traceID(), 3)
 		log.Printf("[SERVER] generate DC failed: %v", err)
 		http.Error(w, "dc generation failed", http.StatusInternalServerError)
 		return
 	}
 	fmt.Printf("[SERVER] generate in-process ms=%.3f\n", float64(time.Since(start).Microseconds())/1000)
 	benchtrace.Mark(benchtrace.CertServerGenerateDone, req.SNI, 0)
+	benchtrace.Mark(benchtrace.CertServerGenerateDoneByID, req.traceID(), 0)
 	fmt.Printf("t6: [SERVER] - EndAutoGenCerts = %d ns\n", nowNS())
 
 	resp := certResponse{
@@ -240,6 +258,7 @@ func (s *serverState) handleCerts(w http.ResponseWriter, r *http.Request) {
 
 	fmt.Printf("t7: [SERVER] - Sending to middlebox: %d ns\n", nowNS())
 	benchtrace.Mark(benchtrace.CertServerResponse, req.SNI, 0)
+	benchtrace.Mark(benchtrace.CertServerResponseByID, req.traceID(), 0)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
 }

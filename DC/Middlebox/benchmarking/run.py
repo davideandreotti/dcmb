@@ -32,6 +32,7 @@ except ImportError as exc:  # pragma: no cover - depends on local machine setup
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_GO = PROJECT_DIR.parent / "go" / "bin" / "go"
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
 def now_ns() -> int:
@@ -250,6 +251,8 @@ class ProcessCPUMonitor:
                     "returncode",
                     "user_time_s",
                     "system_time_s",
+                    "user_time_tree_s",
+                    "system_time_tree_s",
                     "rss_bytes",
                     "vms_bytes",
                     "num_threads",
@@ -269,6 +272,8 @@ class ProcessCPUMonitor:
                         proc = psutil.Process(managed.proc.pid)
                         cpu = proc.cpu_times()
                         mem = proc.memory_info()
+                        user_time_tree = cpu.user
+                        system_time_tree = cpu.system
                         rss_tree = mem.rss
                         vms_tree = mem.vms
                         threads_tree = proc.num_threads()
@@ -276,6 +281,9 @@ class ProcessCPUMonitor:
                         for child in proc.children(recursive=True):
                             try:
                                 child_mem = child.memory_info()
+                                child_cpu = child.cpu_times()
+                                user_time_tree += child_cpu.user
+                                system_time_tree += child_cpu.system
                                 rss_tree += child_mem.rss
                                 vms_tree += child_mem.vms
                                 threads_tree += child.num_threads()
@@ -290,6 +298,8 @@ class ProcessCPUMonitor:
                                 "returncode": managed.poll(),
                                 "user_time_s": cpu.user,
                                 "system_time_s": cpu.system,
+                                "user_time_tree_s": user_time_tree,
+                                "system_time_tree_s": system_time_tree,
                                 "rss_bytes": mem.rss,
                                 "vms_bytes": mem.vms,
                                 "num_threads": proc.num_threads(),
@@ -315,6 +325,7 @@ class ContainerStatsMonitor:
         total_csv_path: Path,
         interval_s: float,
         scope: str = "matching",
+        collector: str = "auto",
     ) -> None:
         self.runtime = runtime
         self.names = names
@@ -323,7 +334,10 @@ class ContainerStatsMonitor:
         self.total_csv_path = total_csv_path
         self.interval_s = interval_s
         self.scope = scope
+        self.collector = collector
+        self.collector_source = "not_started"
         self.stop_event = threading.Event()
+        self.stream_proc: subprocess.Popen[str] | None = None
         self.thread = threading.Thread(target=self._run, daemon=True)
 
     def start(self) -> None:
@@ -335,8 +349,27 @@ class ContainerStatsMonitor:
 
     def stop(self) -> None:
         self.stop_event.set()
+        if self.stream_proc and self.stream_proc.poll() is None:
+            try:
+                os.killpg(self.stream_proc.pid, signal.SIGINT)
+                self.stream_proc.wait(timeout=2)
+            except (ProcessLookupError, subprocess.TimeoutExpired):
+                if self.stream_proc.poll() is None:
+                    try:
+                        os.killpg(self.stream_proc.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    self.stream_proc.wait(timeout=2)
         if self.thread.is_alive():
-            self.thread.join(timeout=2)
+            self.thread.join(timeout=5)
+
+    def metadata(self) -> dict[str, str]:
+        return {
+            "runtime": self.runtime,
+            "requested": self.collector,
+            "source": self.collector_source,
+            "scope": self.scope,
+        }
 
     def _include(self, name: str) -> bool:
         if self.scope == "all":
@@ -398,9 +431,250 @@ class ContainerStatsMonitor:
                 return value
         return ""
 
+    def _write_frame(
+        self,
+        items: list[dict[str, Any]],
+        ts: int,
+        writer: csv.DictWriter,
+        total_writer: csv.DictWriter,
+    ) -> int:
+        container_count = 0
+        cpu_sum = 0.0
+        mem_sum = 0.0
+        pids_sum = 0
+        for item in items:
+            name = str(self._first_stat_value(item, "Name", "name"))
+            if not self._include(name):
+                continue
+            container_id = self._first_stat_value(item, "Container", "ID", "Id", "id")
+            cpu_perc = self._first_stat_value(item, "CPUPerc", "CPU", "CPUPercent", "cpu_percent")
+            mem_usage = self._first_stat_value(item, "MemUsage", "MemUsageBytes", "mem_usage")
+            mem_perc = self._first_stat_value(item, "MemPerc", "MemPercent", "mem_percent")
+            net_io = self._first_stat_value(item, "NetIO", "NetInput", "net_io")
+            block_io = self._first_stat_value(item, "BlockIO", "BlockInput", "block_io")
+            pids = self._first_stat_value(item, "PIDs", "PIDS", "pids")
+            container_count += 1
+            cpu_sum += self._parse_percent(cpu_perc)
+            mem_sum += self._parse_size_bytes(mem_usage)
+            pids_sum += self._parse_int(pids)
+            writer.writerow(
+                {
+                    "ts_ns": ts,
+                    "runtime": self.runtime,
+                    "name": name,
+                    "id": container_id,
+                    "cpu_perc": cpu_perc,
+                    "mem_usage": mem_usage,
+                    "mem_perc": mem_perc,
+                    "net_io": net_io,
+                    "block_io": block_io,
+                    "pids": pids,
+                }
+            )
+        if container_count == 0:
+            return 0
+        total_writer.writerow(
+            {
+                "ts_ns": ts,
+                "runtime": self.runtime,
+                "scope": self.scope,
+                "container_count": container_count,
+                "cpu_perc_sum": f"{cpu_sum:.6f}",
+                "mem_usage_bytes_sum": int(mem_sum),
+                "pids_sum": pids_sum,
+            }
+        )
+        return container_count
+
+    def _run_stats_stream(self, writer: csv.DictWriter, total_writer: csv.DictWriter) -> bool:
+        interval = max(1, round(self.interval_s))
+        cmd = [self.runtime, "stats"]
+        if self.runtime == "podman":
+            cmd.extend(["--all", "--interval", str(interval)])
+        cmd.extend(["--format", "{{json .}}"])
+        try:
+            self.stream_proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                start_new_session=True,
+            )
+        except OSError as exc:
+            print(f"[WARN] {self.runtime} stats stream failed to start: {exc}")
+            return False
+
+        assert self.stream_proc.stdout is not None
+        frame: dict[str, dict[str, Any]] = {}
+        frame_started = time.monotonic()
+        samples = 0
+        for line in self.stream_proc.stdout:
+            line = ANSI_ESCAPE_RE.sub("", line).strip()
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            now = time.monotonic()
+            if frame and now - frame_started >= interval:
+                samples += self._write_frame(list(frame.values()), now_ns(), writer, total_writer)
+                frame = {}
+                frame_started = now
+            name = str(self._first_stat_value(item, "Name", "name"))
+            if name:
+                frame[name] = item
+
+        if frame:
+            samples += self._write_frame(list(frame.values()), now_ns(), writer, total_writer)
+        return samples > 0
+
+    def _docker_cgroup_path(self, container_id: str) -> Path | None:
+        candidates = [
+            Path("/sys/fs/cgroup/system.slice") / f"docker-{container_id}.scope",
+            Path("/sys/fs/cgroup/docker") / container_id,
+        ]
+        return next((path for path in candidates if path.is_dir()), None)
+
+    def _docker_cgroup_paths(self) -> dict[str, Path]:
+        paths: dict[str, Path] = {}
+        systemd_root = Path("/sys/fs/cgroup/system.slice")
+        if systemd_root.is_dir():
+            for path in systemd_root.glob("docker-*.scope"):
+                paths[path.name.removeprefix("docker-").removesuffix(".scope")] = path
+        cgroupfs_root = Path("/sys/fs/cgroup/docker")
+        if cgroupfs_root.is_dir():
+            for path in cgroupfs_root.iterdir():
+                if path.is_dir():
+                    paths[path.name] = path
+        return paths
+
+    def _docker_running_containers(self) -> dict[str, str]:
+        result = subprocess.run(
+            [self.runtime, "ps", "--no-trunc", "--format", "{{json .}}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            return {}
+        containers: dict[str, str] = {}
+        for line in result.stdout.splitlines():
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            container_id = str(item.get("ID", ""))
+            name = str(item.get("Names", ""))
+            if container_id and name and self._include(name):
+                containers[container_id] = name
+        return containers
+
+    def _run_docker_cgroup_v2(self, writer: csv.DictWriter, total_writer: csv.DictWriter) -> bool:
+        if not Path("/sys/fs/cgroup/cgroup.controllers").is_file():
+            return False
+
+        previous_cpu: dict[str, tuple[int, int]] = {}
+        containers: dict[str, str] = {}
+        next_refresh = 0.0
+        samples = 0
+        while not self.stop_event.is_set():
+            monotonic_now = time.monotonic()
+            if monotonic_now >= next_refresh:
+                try:
+                    containers = self._docker_running_containers()
+                except subprocess.TimeoutExpired:
+                    containers = {}
+                next_refresh = monotonic_now + 1.0
+
+            timestamp = now_ns()
+            monotonic_ns = time.monotonic_ns()
+            items: list[dict[str, Any]] = []
+            active_ids: set[str] = set()
+            if self.scope == "all":
+                targets = [
+                    (container_id, containers.get(container_id, container_id), cgroup)
+                    for container_id, cgroup in self._docker_cgroup_paths().items()
+                ]
+            else:
+                targets = []
+                for container_id, name in containers.items():
+                    cgroup = self._docker_cgroup_path(container_id)
+                    if cgroup is not None:
+                        targets.append((container_id, name, cgroup))
+
+            for container_id, name, cgroup in targets:
+                try:
+                    cpu_fields = dict(
+                        line.split(maxsplit=1)
+                        for line in (cgroup / "cpu.stat").read_text(encoding="utf-8").splitlines()
+                    )
+                    usage_usec = int(cpu_fields["usage_usec"])
+                    memory_bytes = int((cgroup / "memory.current").read_text(encoding="utf-8").strip())
+                    pids = int((cgroup / "pids.current").read_text(encoding="utf-8").strip())
+                except (FileNotFoundError, KeyError, OSError, ValueError):
+                    continue
+
+                cpu_percent = 0.0
+                previous = previous_cpu.get(container_id)
+                if previous is not None and monotonic_ns > previous[1]:
+                    cpu_delta_usec = max(0, usage_usec - previous[0])
+                    elapsed_usec = (monotonic_ns - previous[1]) / 1000.0
+                    cpu_percent = cpu_delta_usec / elapsed_usec * 100.0
+                previous_cpu[container_id] = (usage_usec, monotonic_ns)
+                active_ids.add(container_id)
+                items.append(
+                    {
+                        "Name": name,
+                        "ID": container_id,
+                        "CPUPerc": f"{cpu_percent:.6f}%",
+                        "MemUsage": str(memory_bytes),
+                        "MemPerc": "",
+                        "NetIO": "",
+                        "BlockIO": "",
+                        "PIDs": str(pids),
+                    }
+                )
+
+            previous_cpu = {container_id: value for container_id, value in previous_cpu.items() if container_id in active_ids}
+            samples += self._write_frame(items, timestamp, writer, total_writer)
+            self.stop_event.wait(self.interval_s)
+        return samples > 0
+
+    def _run_polling(self, writer: csv.DictWriter, total_writer: csv.DictWriter) -> None:
+        self.collector_source = f"{self.runtime}_stats_no_stream"
+        last_timeout_warning = 0.0
+        while not self.stop_event.is_set():
+            ts = now_ns()
+            try:
+                names = self._matching_container_names()
+                if not names:
+                    time.sleep(self.interval_s)
+                    continue
+                cmd = [self.runtime, "stats", "--no-stream", "--format", "{{json .}}", *names]
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            except subprocess.TimeoutExpired:
+                if time.time() - last_timeout_warning > 5:
+                    print(f"[WARN] {self.runtime} stats timed out; skipping container resource sample")
+                    last_timeout_warning = time.time()
+                time.sleep(self.interval_s)
+                continue
+
+            if result.returncode == 0:
+                items: list[dict[str, Any]] = []
+                for line in result.stdout.splitlines():
+                    if not line.strip():
+                        continue
+                    try:
+                        items.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
+                self._write_frame(items, ts, writer, total_writer)
+            time.sleep(self.interval_s)
+
     def _run(self) -> None:
-        with self.csv_path.open("w", newline="", encoding="utf-8") as handle, self.total_csv_path.open(
-            "w", newline="", encoding="utf-8"
+        with self.csv_path.open("w", newline="", encoding="utf-8", buffering=1) as handle, self.total_csv_path.open(
+            "w", newline="", encoding="utf-8", buffering=1
         ) as total_handle:
             writer = csv.DictWriter(
                 handle,
@@ -431,77 +705,25 @@ class ContainerStatsMonitor:
                 ],
             )
             total_writer.writeheader()
-            last_timeout_warning = 0.0
-            while not self.stop_event.is_set():
-                ts = now_ns()
-                try:
-                    names = self._matching_container_names()
-                    if not names:
-                        time.sleep(self.interval_s)
-                        continue
-                    cmd = [self.runtime, "stats", "--no-stream", "--format", "{{json .}}", *names]
-                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-                except subprocess.TimeoutExpired:
-                    if time.time() - last_timeout_warning > 5:
-                        print(f"[WARN] {self.runtime} stats timed out; skipping container resource sample")
-                        last_timeout_warning = time.time()
-                    time.sleep(self.interval_s)
-                    continue
-
-                if result.returncode == 0:
-                    container_count = 0
-                    cpu_sum = 0.0
-                    mem_sum = 0.0
-                    pids_sum = 0
-                    for line in result.stdout.splitlines():
-                        if not line.strip():
-                            continue
-                        try:
-                            item = json.loads(line)
-                        except json.JSONDecodeError:
-                            continue
-                        name = item.get("Name", "")
-                        if not self._include(name):
-                            continue
-                        container_id = self._first_stat_value(item, "Container", "ID", "Id")
-                        cpu_perc = self._first_stat_value(item, "CPUPerc", "CPU", "CPUPercent")
-                        mem_usage = self._first_stat_value(item, "MemUsage", "MemUsageBytes")
-                        mem_perc = self._first_stat_value(item, "MemPerc", "MemPercent")
-                        net_io = self._first_stat_value(item, "NetIO", "NetInput")
-                        block_io = self._first_stat_value(item, "BlockIO", "BlockInput")
-                        pids = self._first_stat_value(item, "PIDs", "PIDS")
-                        container_count += 1
-                        cpu_sum += self._parse_percent(cpu_perc)
-                        mem_sum += self._parse_size_bytes(mem_usage)
-                        pids_sum += self._parse_int(pids)
-                        writer.writerow(
-                            {
-                                "ts_ns": ts,
-                                "runtime": self.runtime,
-                                "name": name,
-                                "id": container_id,
-                                "cpu_perc": cpu_perc,
-                                "mem_usage": mem_usage,
-                                "mem_perc": mem_perc,
-                                "net_io": net_io,
-                                "block_io": block_io,
-                                "pids": pids,
-                            }
-                        )
-                    total_writer.writerow(
-                        {
-                            "ts_ns": ts,
-                            "runtime": self.runtime,
-                            "scope": self.scope,
-                            "container_count": container_count,
-                            "cpu_perc_sum": f"{cpu_sum:.6f}",
-                            "mem_usage_bytes_sum": int(mem_sum),
-                            "pids_sum": pids_sum,
-                        }
-                    )
-                    handle.flush()
-                    total_handle.flush()
-                time.sleep(self.interval_s)
+            use_cgroup = self.runtime == "docker" and self.collector in {"auto", "cgroup"}
+            use_stream = self.runtime in {"docker", "podman"} and self.collector in {"auto", "stream"}
+            if use_cgroup:
+                self.collector_source = "docker_cgroup_v2"
+                cgroup_ok = self._run_docker_cgroup_v2(writer, total_writer)
+                if not cgroup_ok and not self.stop_event.is_set():
+                    print("[WARN] Docker cgroup-v2 collector unavailable; falling back to stats stream")
+                    self.collector_source = "docker_stats_stream"
+                    self._run_stats_stream(writer, total_writer)
+            elif use_stream:
+                self.collector_source = f"{self.runtime}_stats_stream"
+                stream_ok = self._run_stats_stream(writer, total_writer)
+                if not stream_ok and not self.stop_event.is_set():
+                    print(f"[WARN] {self.runtime} stats stream produced no samples; falling back to --no-stream")
+                    self._run_polling(writer, total_writer)
+            else:
+                self._run_polling(writer, total_writer)
+            handle.flush()
+            total_handle.flush()
 
 
 class Deployment:
@@ -564,7 +786,7 @@ class BaremetalDeployment(Deployment):
         return env
 
     def start(self) -> ManagedProcess:
-        command = list(self.cfg.get("command", ["./middlebox", "-log_level", "debug", "-minimal_logs=false"]))
+        command = list(self.cfg.get("command", ["./middlebox", "-log_level", "error", "-minimal_logs=true"]))
         command.extend(
             [
                 "-trace",
@@ -603,7 +825,7 @@ class GramineSGXDeployment(BaremetalDeployment):
         command = list(
             self.cfg.get(
                 "command",
-                ["gramine-sgx", "middlebox", "-log_level", "debug", "-minimal_logs=false"],
+                ["gramine-sgx", "middlebox", "-log_level", "error", "-minimal_logs=true"],
             )
         )
         command.extend(
@@ -706,6 +928,10 @@ class DockerGatewayDeployment(Deployment):
             f"DOCKER_API_TIMEOUT_MS={self.cfg.get('docker_api_timeout_ms', 5000)}",
         ]
 
+        max_workers = self.cfg.get("max_workers")
+        if max_workers is not None:
+            cmd.extend(["-e", f"DOCKER_MAX_OPERATORS={int(max_workers)}"])
+
         if worker_sgx_enabled:
             cmd.extend(["-e", "DOCKER_WORKER_SGX_ENABLED=true"])
             cmd.extend(["-e", f"DOCKER_WORKER_SGX_ENCLAVE_DEVICE={self.cfg.get('worker_sgx_enclave_device', '/dev/sgx_enclave')}"])
@@ -715,9 +941,14 @@ class DockerGatewayDeployment(Deployment):
             cmd.extend(["-e", f"DOCKER_WORKER_CA={self.cfg.get('worker_ca')}"])
         if "worker_emit_quote" in self.cfg:
             cmd.extend(["-e", f"DOCKER_WORKER_EMIT_QUOTE={self.cfg.get('worker_emit_quote')}"])
+        if "worker_signal_timeout_ms" in self.cfg:
+            cmd.extend(["-e", f"DOCKER_WORKER_SIGNAL_TIMEOUT_MS={self.cfg.get('worker_signal_timeout_ms')}"])
+        if "delete_after_use" in self.cfg:
+            cmd.extend(["-e", f"DOCKER_DELETE_AFTER_USE={str(bool(self.cfg.get('delete_after_use'))).lower()}"])
         if "ticket_identity_key" in self.cfg:
             cmd.extend(["-e", f"DCMB_TICKET_IDENTITY_KEY={self.cfg.get('ticket_identity_key')}"])
-            cmd.extend(["-e", "DOCKER_DELETE_AFTER_USE=false"])
+            if "delete_after_use" not in self.cfg:
+                cmd.extend(["-e", "DOCKER_DELETE_AFTER_USE=false"])
 
         cmd.extend([
             "-e",
@@ -736,7 +967,7 @@ class DockerGatewayDeployment(Deployment):
             cwd=self.controller.middlebox_dir,
             env={},
             ready_patterns=["[GATEWAY_READY]"],
-            event_patterns=["docker worker ready"],
+            event_patterns=["docker worker ready", "[GATEWAY_POOL_READY]"],
         )
         return self.proc
 
@@ -755,8 +986,13 @@ class DockerGatewayDeployment(Deployment):
         super().wait_ready(timeout_s)
         min_ready = int(self.cfg.get("min_ready", 1))
         if min_ready > 0 and self.proc:
-            event = self.proc.wait_event("docker worker ready", timeout_s)
-            print(f"[CTRL] first docker worker ready: {event.get('line', '')}")
+            if bool(self.cfg.get("wait_for_full_pool", False)):
+                pool_timeout = float(self.cfg.get("pool_readiness_timeout_s", timeout_s))
+                event = self.proc.wait_event("[GATEWAY_POOL_READY]", pool_timeout)
+                print(f"[CTRL] docker worker pool ready: {event.get('line', '')}")
+            else:
+                event = self.proc.wait_event("docker worker ready", timeout_s)
+                print(f"[CTRL] first docker worker ready: {event.get('line', '')}")
 
     def client_url(self) -> str:
         host = self.controller.hosts["middlebox"].get("ip", "127.0.0.1")
@@ -774,6 +1010,7 @@ class DockerGatewayDeployment(Deployment):
             total_csv_path=self.run.cpu_dir / "containers_total.csv",
             interval_s=self.controller.cpu_interval_s,
             scope=str(self.cfg.get("container_stats_scope", "matching")),
+            collector=str(self.cfg.get("container_stats_collector", "auto")),
         )
 
 
@@ -893,6 +1130,7 @@ class Controller:
         self.cpu_interval_s = float(self.campaign.get("cpu_interval_s", 0.2))
         self.trace_buffer_events = int(self.campaign.get("trace_buffer_events", 100000))
         self.trace_drop_on_full = bool(self.campaign.get("trace_drop_on_full", True))
+        self.startup_only = bool(self.campaign.get("startup_only", False))
 
         campaign_name = sanitize(self.campaign.get("name", "campaign"))
         self.campaign_dir = self.output_root / f"{timestamp_name()}_{campaign_name}"
@@ -915,6 +1153,7 @@ class Controller:
                     "iteration",
                     "status",
                     "client_returncode",
+                    "failure_reason",
                     "run_dir",
                 ],
             )
@@ -925,10 +1164,15 @@ class Controller:
                 run_ctx = RunContext(run_name, self.campaign_dir / run_name)
                 status = "ok"
                 client_returncode = None
+                failure_reason = ""
                 try:
                     client_returncode = self.run_one(run_ctx, deployment_cfg, mode, clients, rate, iteration)
+                    if client_returncode not in {None, 0}:
+                        status = "failed"
+                        failure_reason = f"client exited with returncode={client_returncode}"
                 except Exception as exc:
                     status = "failed"
+                    failure_reason = str(exc)
                     print(f"[CTRL] run {run_name} failed: {exc}", file=sys.stderr)
                 writer.writerow(
                     {
@@ -940,6 +1184,7 @@ class Controller:
                         "iteration": iteration,
                         "status": status,
                         "client_returncode": client_returncode,
+                        "failure_reason": failure_reason,
                         "run_dir": str(run_ctx.directory),
                     }
                 )
@@ -950,20 +1195,33 @@ class Controller:
     def iter_matrix(self) -> Any:
         matrix = self.config.get("client_matrix", {})
         deployments = self.config.get("deployments", [])
+        if self.startup_only:
+            for deployment_cfg in deployments:
+                for iteration in range(1, self.runs + 1):
+                    yield deployment_cfg, "startup", 0, 0.0, iteration
+            return
         default_modes = matrix.get("modes", ["fresh"])
         default_clients_values = matrix.get("clients", [1])
         default_rates = matrix.get("rates", [10])
+        default_rates_by_mode = matrix.get("rates_by_mode", {})
         for deployment_cfg in deployments:
             modes = deployment_cfg.get("modes", default_modes)
             clients_values = deployment_cfg.get("clients", default_clients_values)
-            rates = deployment_cfg.get("rates", default_rates)
-            for mode, clients, rate in itertools.product(modes, clients_values, rates):
-                if str(mode) == "fresh" and float(rate) <= 0:
-                    continue
-                for iteration in range(1, self.runs + 1):
-                    yield deployment_cfg, str(mode), int(clients), float(rate), iteration
+            deployment_rates_by_mode = deployment_cfg.get("rates_by_mode", default_rates_by_mode)
+            for mode in modes:
+                rates = deployment_cfg.get(
+                    "rates",
+                    deployment_rates_by_mode.get(str(mode), default_rates),
+                )
+                for clients, rate in itertools.product(clients_values, rates):
+                    if str(mode) == "fresh" and float(rate) <= 0:
+                        continue
+                    for iteration in range(1, self.runs + 1):
+                        yield deployment_cfg, str(mode), int(clients), float(rate), iteration
 
     def run_name(self, deployment_cfg: dict[str, Any], mode: str, clients: int, rate: float, iteration: int) -> str:
+        if self.startup_only:
+            return sanitize(f"{deployment_cfg['name']}_startup_run{iteration}")
         rate_text = "closed" if rate <= 0 else f"rate{rate:g}"
         return sanitize(f"{deployment_cfg['name']}_clients{clients}_{mode}_{rate_text}_run{iteration}")
 
@@ -978,13 +1236,26 @@ class Controller:
     ) -> int | None:
         print(f"[CTRL] starting {run_ctx.name}")
         run_ctx.create()
-        deployment = self.make_deployment(deployment_cfg, run_ctx)
+        self._current_run = run_ctx
+        effective_deployment_cfg = deep_copy_jsonable(deployment_cfg)
+        if (
+            effective_deployment_cfg.get("kind") == "docker_gateway"
+            and bool(effective_deployment_cfg.get("prewarm_for_clients", False))
+            and mode != "startup"
+        ):
+            warmup_spare = 1 if mode == "persistent" else 0
+            initial_workers = 1 if mode == "fresh" else clients + warmup_spare
+            effective_deployment_cfg["min_ready"] = initial_workers
+            effective_deployment_cfg["max_workers"] = initial_workers
+            effective_deployment_cfg["wait_for_full_pool"] = True
+
+        deployment = self.make_deployment(effective_deployment_cfg, run_ctx)
         deployment.cleanup_before()
 
         metadata: dict[str, Any] = {
             "run_name": run_ctx.name,
             "parameters": {
-                "deployment": deployment_cfg,
+                "deployment": effective_deployment_cfg,
                 "mode": mode,
                 "clients": clients,
                 "rate": rate,
@@ -1003,19 +1274,23 @@ class Controller:
         client_proc: ManagedProcess | None = None
 
         try:
-            if deployment.uses_certserver():
+            if not self.startup_only and deployment.uses_certserver():
                 certserver = self.start_certserver(run_ctx)
                 managed.append(("certserver", certserver))
                 certserver.wait_ready(self.readiness_timeout_s)
 
-            appserver = self.start_appserver(run_ctx)
-            managed.append(("server", appserver))
-            appserver.wait_ready(self.readiness_timeout_s)
+            if not self.startup_only:
+                appserver = self.start_appserver(run_ctx)
+                managed.append(("server", appserver))
+                appserver.wait_ready(self.readiness_timeout_s)
 
             deployment_proc = deployment.start()
             if deployment_proc:
                 managed.append((deployment.kind, deployment_proc))
                 deployment.wait_ready(self.readiness_timeout_s)
+
+            if self.startup_only:
+                return 0
 
             if self.warmup_s > 0:
                 time.sleep(self.warmup_s)
@@ -1028,10 +1303,15 @@ class Controller:
 
             client_proc = self.start_client(run_ctx, mode, clients, rate, deployment.client_url())
             managed.append(("client", client_proc))
-            client_proc.wait(timeout_s=self.duration_s + 30)
+            self.wait_for_client_or_deployment(client_proc, deployment, self.duration_s + 30)
             returncode = client_proc.poll()
             print(f"[CTRL] client finished returncode={returncode}")
+            if returncode not in {None, 0}:
+                metadata["failure_reason"] = f"client exited with returncode={returncode}"
             return returncode
+        except Exception as exc:
+            metadata["failure_reason"] = str(exc)
+            raise
         finally:
             if client_proc and client_proc.poll() is None:
                 client_proc.stop(grace_s=5)
@@ -1039,6 +1319,7 @@ class Controller:
                 cpu_monitor.stop()
             if container_monitor:
                 container_monitor.stop()
+                metadata["resource_collector"] = container_monitor.metadata()
             try:
                 deployment.stop()
             except Exception as exc:
@@ -1051,6 +1332,25 @@ class Controller:
             self.write_metadata(run_ctx, metadata)
             self.write_startup_csv(run_ctx, managed)
             self.convert_traces(run_ctx)
+
+    def wait_for_client_or_deployment(
+        self,
+        client_proc: ManagedProcess,
+        deployment: Deployment,
+        timeout_s: float,
+    ) -> None:
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            if deployment.proc and deployment.proc.poll() is not None:
+                raise RuntimeError(
+                    f"deployment {deployment.name!r} exited early; "
+                    f"returncode={deployment.proc.poll()}"
+                )
+            if client_proc.poll() is not None:
+                client_proc.join_readers()
+                return
+            time.sleep(0.1)
+        raise TimeoutError(f"client did not finish within {timeout_s:.1f}s")
 
     def make_deployment(self, cfg: dict[str, Any], run_ctx: RunContext) -> Deployment:
         kind = str(cfg.get("kind"))

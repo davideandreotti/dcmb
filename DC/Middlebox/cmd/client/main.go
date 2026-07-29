@@ -5,10 +5,13 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log"
+	"math"
+	"net"
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
@@ -20,7 +23,10 @@ import (
 	"time"
 
 	benchtrace "dc/middlebox/internal/trace"
+	"dc/middlebox/internal/tracebind"
 )
+
+const benchmarkRequestTimeout = 5 * time.Second
 
 type headerList []string
 
@@ -112,7 +118,47 @@ func newHTTPClient(caPath string, serverName string, closeAfterRequest bool, ses
 		},
 	}
 
-	return &http.Client{Transport: tr}, tr, nil
+	return &http.Client{Transport: tr, Timeout: benchmarkRequestTimeout}, tr, nil
+}
+
+func waitUntilOrDeadline(next time.Time, end time.Time) bool {
+	wait := time.Until(next)
+	remaining := time.Until(end)
+	if remaining <= 0 {
+		return false
+	}
+	if wait <= 0 {
+		return true
+	}
+
+	timer := time.NewTimer(wait)
+	deadlineTimer := time.NewTimer(remaining)
+	defer timer.Stop()
+	defer deadlineTimer.Stop()
+
+	select {
+	case <-timer.C:
+		return time.Now().Before(end)
+	case <-deadlineTimer.C:
+		return false
+	}
+}
+
+func updatePeak(peak *atomic.Int64, value int64) {
+	for {
+		current := peak.Load()
+		if value <= current || peak.CompareAndSwap(current, value) {
+			return
+		}
+	}
+}
+
+func isTimeoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
 func doHTTPSRequest(
@@ -151,6 +197,13 @@ func doHTTPSRequest(
 	req.Close = closeAfterRequest
 
 	trace := &httptrace.ClientTrace{
+		GotConn: func(info httptrace.GotConnInfo) {
+			benchtrace.Mark(
+				benchtrace.ClientConnectionBind,
+				traceID,
+				tracebind.ConnectionKey(info.Conn.LocalAddr(), info.Conn.RemoteAddr()),
+			)
+		},
 		ConnectStart: func(network string, addr string) {
 			benchtrace.Mark(benchtrace.ClientTCPConnectStart, traceID, 0)
 			info(fmt.Sprintf("t27: [CLIENT] - TCPConnectStart = %d ns", time.Now().UnixNano()))
@@ -169,6 +222,11 @@ func doHTTPSRequest(
 				info(fmt.Sprintf("t21: [CLIENT] - TLSHandshakeDoneError = %d ns err=%v", time.Now().UnixNano(), err))
 				return
 			}
+			resumed := uint64(0)
+			if cs.DidResume {
+				resumed = 1
+			}
+			benchtrace.Mark(benchtrace.ClientTLSResumed, traceID, resumed)
 
 			info(fmt.Sprintf("t21: [CLIENT] - TLSHandshakeDone = %d ns resumed=%v", time.Now().UnixNano(), cs.DidResume))
 		},
@@ -345,6 +403,9 @@ func runLoopFixedRate(
 	var totalSuccess atomic.Int64 // risposte 2xx
 	var totalNon2xx atomic.Int64  // status code != 2xx
 	var totalErrors atomic.Int64  // errori di trasporto/timeout/lettura
+	var totalTimeouts atomic.Int64
+	var currentInFlight atomic.Int64
+	var peakInFlight atomic.Int64
 
 	// Latenze (in ns) raccolte per p50/p95/p99 a fine run.
 	// Protetto da mutex; per rate molto alti puoi sostituire con un
@@ -355,6 +416,7 @@ func runLoopFixedRate(
 
 	info(fmt.Sprintf("Fixed-rate loop started: duration=%v offered_rate=%.4f req/s interval=%v maxInFlight=%d", duration, rateRPS, rate, maxInFlight))
 
+scheduleLoop:
 	for {
 		if stop.Load() {
 			break
@@ -366,8 +428,9 @@ func runLoopFixedRate(
 		}
 
 		if now.Before(next) {
-
-			time.Sleep(next.Sub(now))
+			if !waitUntilOrDeadline(next, end) {
+				break
+			}
 		} else if now.Sub(next) >= rate {
 			/*
 				In ritardo: la scadenza di uno o più slot è già passata.
@@ -413,7 +476,21 @@ func runLoopFixedRate(
 			- non vengono create goroutine infinite;
 			- il producer resta indietro se il sistema non riesce a sostenere il rate.
 		*/
-		sem <- struct{}{}
+		remaining := time.Until(end)
+		if remaining <= 0 {
+			break
+		}
+		acquireTimer := time.NewTimer(remaining)
+		select {
+		case sem <- struct{}{}:
+			if !acquireTimer.Stop() {
+				<-acquireTimer.C
+			}
+		case <-acquireTimer.C:
+			break scheduleLoop
+		}
+		inFlight := currentInFlight.Add(1)
+		updatePeak(&peakInFlight, inFlight)
 
 		wg.Add(1)
 		totalStarted.Add(1)
@@ -421,6 +498,7 @@ func runLoopFixedRate(
 		go func(reqID int, scheduledAt time.Time) {
 			defer wg.Done()
 			defer func() {
+				currentInFlight.Add(-1)
 				<-sem
 			}()
 
@@ -440,6 +518,9 @@ func runLoopFixedRate(
 			switch {
 			case err != nil:
 				totalErrors.Add(1)
+				if isTimeoutError(err) {
+					totalTimeouts.Add(1)
+				}
 			case status >= 200 && status < 300:
 				totalSuccess.Add(1)
 				latMu.Lock()
@@ -460,6 +541,8 @@ func runLoopFixedRate(
 		}(id, scheduled)
 	}
 
+	scheduleElapsed := time.Since(loopStart)
+	unfinishedAtScheduleEnd := currentInFlight.Load()
 	info("Fixed-rate loop ended: waiting for active requests...")
 	wg.Wait()
 	elapsed := time.Since(loopStart)
@@ -472,8 +555,8 @@ func runLoopFixedRate(
 
 	// === Throughput report (offered vs achieved) ===
 	offeredRate := rateRPS // req/s richiesti
-	scheduledRate := float64(totalScheduled.Load()) / elapsed.Seconds()
-	startedRate := float64(totalStarted.Load()) / elapsed.Seconds()
+	scheduledRate := float64(totalScheduled.Load()) / scheduleElapsed.Seconds()
+	startedRate := float64(totalStarted.Load()) / scheduleElapsed.Seconds()
 	achievedRate := float64(totalSuccess.Load()) / elapsed.Seconds()
 
 	latMu.Lock()
@@ -485,6 +568,23 @@ func runLoopFixedRate(
 	if offeredRate > 0 {
 		saturationRatio = achievedRate / offeredRate
 	}
+	scheduledRatio := 0.0
+	if offeredRate > 0 {
+		scheduledRatio = scheduledRate / offeredRate
+	}
+	qualityFlags := make([]string, 0, 3)
+	if peakInFlight.Load() >= int64(maxInFlight) {
+		qualityFlags = append(qualityFlags, "inflight_limit_hit")
+	}
+	if unfinishedAtScheduleEnd > 0 {
+		qualityFlags = append(qualityFlags, "unfinished_at_schedule_end")
+	}
+	if scheduledRatio < 0.98 {
+		qualityFlags = append(qualityFlags, "offered_load_not_reached")
+	}
+	if totalTimeouts.Load() > 0 {
+		qualityFlags = append(qualityFlags, "request_timeouts")
+	}
 
 	log.Println("=== THROUGHPUT REPORT ===")
 	log.Printf("  elapsed              = %v", elapsed)
@@ -493,6 +593,8 @@ func runLoopFixedRate(
 	log.Printf("  started_rate_rps     = %.2f   (post-semaphore, sent to server)", startedRate)
 	log.Printf("  achieved_rate_rps    = %.2f   (2xx responses received)", achievedRate)
 	log.Printf("  saturation_ratio     = %.3f   (achieved/offered; <1 => system saturated)", saturationRatio)
+	log.Printf("  quality              = flags=%s peak_in_flight=%d/%d unfinished_at_schedule_end=%d timeouts=%d",
+		strings.Join(qualityFlags, ";"), peakInFlight.Load(), maxInFlight, unfinishedAtScheduleEnd, totalTimeouts.Load())
 	log.Printf("  totals: scheduled=%d started=%d success=%d non2xx=%d errors=%d late_slots=%d",
 		totalScheduled.Load(), totalStarted.Load(),
 		totalSuccess.Load(), totalNon2xx.Load(), totalErrors.Load(),
@@ -505,12 +607,13 @@ func runLoopFixedRate(
 	}
 
 	// Riga "machine-readable" pensata per essere parsata dagli script Python.
-	fmt.Printf("THROUGHPUT_CSV,offered_rps,scheduled_rps,started_rps,achieved_rps,sat_ratio,success,non2xx,errors,late,p50_ns,p95_ns,p99_ns,mean_ns,elapsed_s\n")
-	fmt.Printf("THROUGHPUT_DATA,%.4f,%.4f,%.4f,%.4f,%.4f,%d,%d,%d,%d,%d,%d,%d,%d,%.4f\n",
+	fmt.Printf("THROUGHPUT_CSV,offered_rps,scheduled_rps,started_rps,achieved_rps,sat_ratio,success,non2xx,errors,timeouts,late,p50_ns,p95_ns,p99_ns,mean_ns,peak_in_flight,inflight_limit,unfinished_at_schedule_end,scheduled_ratio,quality_flags,elapsed_s\n")
+	fmt.Printf("THROUGHPUT_DATA,%.4f,%.4f,%.4f,%.4f,%.4f,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%.4f,%s,%.4f\n",
 		offeredRate, scheduledRate, startedRate, achievedRate, saturationRatio,
-		totalSuccess.Load(), totalNon2xx.Load(), totalErrors.Load(),
+		totalSuccess.Load(), totalNon2xx.Load(), totalErrors.Load(), totalTimeouts.Load(),
 		totalLate.Load(),
 		p50.Nanoseconds(), p95.Nanoseconds(), p99.Nanoseconds(), mean.Nanoseconds(),
+		peakInFlight.Load(), maxInFlight, unfinishedAtScheduleEnd, scheduledRatio, strings.Join(qualityFlags, ";"),
 		elapsed.Seconds(),
 	)
 
@@ -581,6 +684,8 @@ func runLoopLogicalClients(
 	var totalSuccess atomic.Int64
 	var totalNon2xx atomic.Int64
 	var totalErrors atomic.Int64
+	var totalTimeouts atomic.Int64
+	participated := make([]atomic.Bool, clients)
 
 	var latMu sync.Mutex
 	allLatencies := make([]int64, 0, 1024)
@@ -628,7 +733,9 @@ func runLoopLogicalClients(
 				if !closedLoop {
 					now := time.Now()
 					if now.Before(next) {
-						time.Sleep(next.Sub(now))
+						if !waitUntilOrDeadline(next, end) {
+							return
+						}
 					} else if now.Sub(next) >= perClientInterval {
 						missed := int64(now.Sub(next)/perClientInterval) + 1
 						totalLate.Add(missed)
@@ -639,6 +746,7 @@ func runLoopLogicalClients(
 				}
 
 				reqID := int(nextRequestID.Add(1))
+				participated[clientIndex].Store(true)
 				totalScheduled.Add(1)
 				totalStarted.Add(1)
 				traceID := fmt.Sprintf("%s-%d", localClientID, reqID)
@@ -653,6 +761,9 @@ func runLoopLogicalClients(
 				switch {
 				case err != nil:
 					totalErrors.Add(1)
+					if isTimeoutError(err) {
+						totalTimeouts.Add(1)
+					}
 				case status >= 200 && status < 300:
 					totalSuccess.Add(1)
 					latMu.Lock()
@@ -716,6 +827,33 @@ func runLoopLogicalClients(
 	if offeredRate > 0 {
 		saturationRatio = achievedRate / offeredRate
 	}
+	scheduledRatio := 1.0
+	if !closedLoop && offeredRate > 0 {
+		scheduledRatio = scheduledRate / offeredRate
+	}
+	participatingClients := 0
+	for i := range participated {
+		if participated[i].Load() {
+			participatingClients++
+		}
+	}
+	requiredClientsP99 := 0
+	if !closedLoop && offeredRate > 0 && p99 > 0 {
+		requiredClientsP99 = int(math.Ceil(offeredRate * p99.Seconds()))
+	}
+	qualityFlags := make([]string, 0, 3)
+	if participatingClients < clients {
+		qualityFlags = append(qualityFlags, "partial_client_participation")
+	}
+	if scheduledRatio < 0.98 {
+		qualityFlags = append(qualityFlags, "offered_load_not_reached")
+	}
+	if requiredClientsP99 > clients {
+		qualityFlags = append(qualityFlags, "serial_client_concurrency_limited")
+	}
+	if totalTimeouts.Load() > 0 {
+		qualityFlags = append(qualityFlags, "request_timeouts")
+	}
 
 	log.Println("=== THROUGHPUT REPORT ===")
 	log.Printf("  mode                 = %s", modeName)
@@ -730,6 +868,8 @@ func runLoopLogicalClients(
 	log.Printf("  started_rate_rps     = %.2f   (sent to server)", startedRate)
 	log.Printf("  achieved_rate_rps    = %.2f   (2xx responses received)", achievedRate)
 	log.Printf("  saturation_ratio     = %.3f   (achieved/offered; <1 => system saturated)", saturationRatio)
+	log.Printf("  quality              = flags=%s participating_clients=%d/%d required_clients_p99=%d timeouts=%d",
+		strings.Join(qualityFlags, ";"), participatingClients, clients, requiredClientsP99, totalTimeouts.Load())
 	log.Printf("  totals: scheduled=%d started=%d success=%d non2xx=%d errors=%d late_slots=%d",
 		totalScheduled.Load(), totalStarted.Load(),
 		totalSuccess.Load(), totalNon2xx.Load(), totalErrors.Load(),
@@ -751,14 +891,15 @@ func runLoopLogicalClients(
 		log.Println("  latency subsequent_request: no successful samples")
 	}
 
-	fmt.Printf("THROUGHPUT_CSV,mode,offered_rps,scheduled_rps,started_rps,achieved_rps,sat_ratio,success,non2xx,errors,late,all_p50_ns,all_p95_ns,all_p99_ns,all_mean_ns,first_n,first_p50_ns,first_p95_ns,first_p99_ns,first_mean_ns,subsequent_n,subsequent_p50_ns,subsequent_p95_ns,subsequent_p99_ns,subsequent_mean_ns,elapsed_s\n")
-	fmt.Printf("THROUGHPUT_DATA,%s,%.4f,%.4f,%.4f,%.4f,%.4f,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%.4f\n",
+	fmt.Printf("THROUGHPUT_CSV,mode,offered_rps,scheduled_rps,started_rps,achieved_rps,sat_ratio,success,non2xx,errors,timeouts,late,all_p50_ns,all_p95_ns,all_p99_ns,all_mean_ns,first_n,first_p50_ns,first_p95_ns,first_p99_ns,first_mean_ns,subsequent_n,subsequent_p50_ns,subsequent_p95_ns,subsequent_p99_ns,subsequent_mean_ns,configured_clients,participating_clients,required_clients_p99,scheduled_ratio,quality_flags,elapsed_s\n")
+	fmt.Printf("THROUGHPUT_DATA,%s,%.4f,%.4f,%.4f,%.4f,%.4f,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%.4f,%s,%.4f\n",
 		modeName,
 		offeredRate, scheduledRate, startedRate, achievedRate, saturationRatio,
-		totalSuccess.Load(), totalNon2xx.Load(), totalErrors.Load(), totalLate.Load(),
+		totalSuccess.Load(), totalNon2xx.Load(), totalErrors.Load(), totalTimeouts.Load(), totalLate.Load(),
 		p50.Nanoseconds(), p95.Nanoseconds(), p99.Nanoseconds(), mean.Nanoseconds(),
 		nFirst, firstP50.Nanoseconds(), firstP95.Nanoseconds(), firstP99.Nanoseconds(), firstMean.Nanoseconds(),
 		nReused, reusedP50.Nanoseconds(), reusedP95.Nanoseconds(), reusedP99.Nanoseconds(), reusedMean.Nanoseconds(),
+		clients, participatingClients, requiredClientsP99, scheduledRatio, strings.Join(qualityFlags, ";"),
 		elapsed.Seconds(),
 	)
 
