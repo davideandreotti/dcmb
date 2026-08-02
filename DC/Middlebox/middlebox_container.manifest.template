@@ -1,6 +1,6 @@
 libos.entrypoint = "/middlebox"
 
-loader.log_level = "warning"
+loader.log_level = "error"
 loader.env.LD_LIBRARY_PATH = "/lib:/usr/lib:/usr/lib/x86_64-linux-gnu"
 loader.env.GODEBUG = "netdns=go"
 loader.insecure__use_cmdline_argv = true
@@ -22,7 +22,7 @@ fs.mounts = [
   { type = "chroot", path = "/trace", uri = "file:/trace" }
 ]
 
-sgx.debug = true
+sgx.debug = false
 sgx.enclave_size = "2G"
 sgx.edmm_enable = false
 sgx.max_threads = 16

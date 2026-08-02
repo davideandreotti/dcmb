@@ -1,6 +1,6 @@
 libos.entrypoint = "/middlebox"
 
-loader.log_level = "debug"
+loader.log_level = "error"
 loader.env.LD_LIBRARY_PATH = "/lib:/usr/lib:/usr/lib/x86_64-linux-gnu"
 loader.env.GODEBUG = "netdns=go"
 loader.insecure__use_cmdline_argv = true
@@ -37,7 +37,7 @@ fs.mounts = [
 # SGX CONFIG
 # =========================
 
-sgx.debug = true
+sgx.debug = false
 sgx.enclave_size = "2G"
 sgx.edmm_enable = {{ 'true' if env.get('EDMM', '0') == '1' else 'false' }}
 sgx.max_threads = 20

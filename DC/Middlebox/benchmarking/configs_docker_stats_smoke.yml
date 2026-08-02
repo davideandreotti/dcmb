@@ -17,14 +17,13 @@ hosts:
 
 paths:
   middlebox_dir: /home/bonsai/dcmb/DC/Middlebox
-  server_app_script: /home/bonsai/dcmb/PerformanceMeasuring/certs_server.py
 
 server:
   target_url: https://10.79.1.175:8000
   cert_url: http://10.79.1.175:5000
   request_path: /function/init
   certserver_command: ["./certserver"]
-  appserver_command: ["python3", "-u", "/home/bonsai/dcmb/PerformanceMeasuring/certs_server.py"]
+  appserver_command: ["./appserver"]
 
 client:
   binary: ./client

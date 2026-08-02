@@ -69,6 +69,7 @@ const (
 	MiddleboxUpstreamResponseFirst    uint32 = 3030
 	MiddleboxDownstreamResponseFirst  uint32 = 3031
 	MiddleboxDownstreamResponseDone   uint32 = 3032
+	MiddleboxUpstreamConnectionBind   uint32 = 3033
 
 	CertServerRequest          uint32 = 4001
 	CertServerGenerate         uint32 = 4002
@@ -85,7 +86,7 @@ const (
 	CertServerQuoteVerifyByID  uint32 = 4013
 	CertServerQuoteDoneByID    uint32 = 4014
 
-	// Reserved for the application server when it moves to the shared tracer.
+	// Application/request server lifecycle.
 	RequestServerRequestStart  uint32 = 5001
 	RequestServerResponseStart uint32 = 5002
 	RequestServerResponseDone  uint32 = 5003
@@ -160,6 +161,7 @@ var eventNames = map[uint32]string{
 	MiddleboxUpstreamResponseFirst:    "middlebox_upstream_response_first_byte",
 	MiddleboxDownstreamResponseFirst:  "middlebox_downstream_response_first_byte",
 	MiddleboxDownstreamResponseDone:   "middlebox_downstream_response_done",
+	MiddleboxUpstreamConnectionBind:   "middlebox_upstream_connection_bind",
 
 	CertServerRequest:          "certserver_request",
 	CertServerGenerate:         "certserver_generate",

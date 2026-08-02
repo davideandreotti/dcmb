@@ -1,0 +1,138 @@
+campaign:
+  name: handshake_capacity
+  output_root: experiments
+  # Final paper: use >=5 runs/point, 10 for noisy p99 points.
+  runs: 1
+  duration_s: 30
+  warmup_s: 1
+  cooldown_s: 5
+  readiness_timeout_s: 30
+  cpu_interval_s: 0.2
+  trace_buffer_events: 100000
+  trace_drop_on_full: true
+
+hosts:
+  client:
+    host: localhost
+    ip: 127.0.0.1
+    work_dir: /home/bonsai/dcmb/DC/Middlebox
+  middlebox:
+    host: localhost
+    ip: 127.0.0.1
+    work_dir: /home/bonsai/dcmb/DC/Middlebox
+  server:
+    host: localhost
+    ip: 10.79.1.175
+    work_dir: /home/bonsai/dcmb
+
+paths:
+  middlebox_dir: /home/bonsai/dcmb/DC/Middlebox
+
+server:
+  target_url: https://10.79.1.175:8000
+  cert_url: http://10.79.1.175:5000
+  request_path: /function/init
+  certserver_command: ["./certserver", "-log_level", "error"]
+  appserver_command: ["./appserver", "-log_level", "error"]
+
+client:
+  binary: ./client
+  method: POST
+  servername: server
+  data:
+    operation: init
+  headers:
+    - "Authorization: Bearer token"
+    - "Content-Type: application/json"
+    - "X-Testing: 1"
+  # Fresh uses this semaphore; resumption uses the 10 logical clients below.
+  max_in_flight: 1024
+
+client_matrix:
+  modes: [fresh, resumption]
+  # In fresh mode this value labels the fixed-concurrency experiment; actual
+  # concurrency is enforced by max_in_flight above. In resumption mode it is
+  # also the real number of logical clients.
+  clients: [10]
+  rates_by_mode:
+    # Includes the 1-5 handshakes/s region where disposable Docker workers
+    # first saturate, and fills the old gap between 1000 and 5000.
+    fresh: [1, 1.5, 2, 2.5] #, 3, 4, 5, 10, 25, 50, 100, 250, 500, 750, 1000, 1250, 1500, 2000, 3000, 4000, 5000]
+    # The client primes every logical session cache 100 ms apart before the
+    # measured interval. These rates therefore contain resumed handshakes only.
+    resumption: [1, 1.5, 2, 2.5, 3, 4] #, 5, 10, 25, 50, 100, 250, 500, 750, 1000, 1250, 1500, 2000, 3000, 4000, 5000]
+
+deployments:
+  # - name: direct
+  #   kind: direct
+  #   modes: [fresh]
+
+  # - name: baremetal_full_reuse
+  #   kind: baremetal
+  #   modes: [fresh]
+  #   command: ["./middlebox", "-log_level", "error", "-reuse_dc=true"]
+
+  # - name: sgx_full_reuse
+  #   kind: gramine_sgx
+  #   modes: [fresh]
+  #   command: ["gramine-sgx", "middlebox", "-log_level", "error", "-reuse_dc=true"]
+  #   env:
+  #     MBX_EMIT_QUOTE: "1"
+
+  # - name: docker_full_noreuse
+  #   kind: docker_gateway
+  #   modes: [fresh]
+  #   prewarm_for_clients: true
+  #   pool_readiness_timeout_s: 120
+  #   worker_image: dcmiddlebox-worker:baseline
+  #   worker_reuse_dc: false
+  #   min_ready: 10
+  #   scale_up_by: 10
+  #   container_stats_scope: all
+  #   container_stats_collector: auto
+  #   worker_trace_enabled: false
+
+  - name: docker_sgxgo_full_noreuse
+    kind: docker_gateway
+    modes: [fresh]
+    prewarm_for_clients: true
+    pool_readiness_timeout_s: 180
+    worker_image: dcmiddlebox-worker:sgxgo
+    worker_reuse_dc: false
+    worker_sgx_enabled: true
+    worker_emit_quote: "1"
+    min_ready: 10
+    scale_up_by: 10
+    container_stats_scope: all
+    container_stats_collector: auto
+    worker_trace_enabled: false
+
+  # - name: docker_full_resumption
+  #   kind: docker_gateway
+  #   modes: [resumption]
+  #   prewarm_for_clients: true
+  #   pool_readiness_timeout_s: 120
+  #   worker_image: dcmiddlebox-worker:baseline
+  #   worker_reuse_dc: false
+  #   ticket_identity_key: dcmb-handshake-capacity
+  #   min_ready: 10
+  #   scale_up_by: 10
+  #   container_stats_scope: all
+  #   container_stats_collector: auto
+  #   worker_trace_enabled: false
+
+  - name: docker_sgxgo_full_resumption
+    kind: docker_gateway
+    modes: [resumption]
+    prewarm_for_clients: true
+    pool_readiness_timeout_s: 180
+    worker_image: dcmiddlebox-worker:sgxgo
+    worker_reuse_dc: true
+    worker_sgx_enabled: true
+    worker_emit_quote: "1"
+    ticket_identity_key: dcmb-handshake-capacity
+    min_ready: 10
+    scale_up_by: 10
+    container_stats_scope: all
+    container_stats_collector: auto
+    worker_trace_enabled: false

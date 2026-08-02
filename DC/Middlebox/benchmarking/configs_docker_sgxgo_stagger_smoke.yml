@@ -1,0 +1,57 @@
+campaign:
+  name: docker_sgxgo_stagger_smoke
+  output_root: experiments
+  runs: 1
+  duration_s: 15
+  warmup_s: 1
+  cooldown_s: 3
+  readiness_timeout_s: 60
+  cpu_interval_s: 0.2
+  trace_buffer_events: 100000
+  trace_drop_on_full: true
+
+hosts:
+  client: {host: localhost, ip: 127.0.0.1, work_dir: /home/bonsai/dcmb/DC/Middlebox}
+  middlebox: {host: localhost, ip: 127.0.0.1, work_dir: /home/bonsai/dcmb/DC/Middlebox}
+  server: {host: localhost, ip: 10.79.1.175, work_dir: /home/bonsai/dcmb}
+
+paths:
+  middlebox_dir: /home/bonsai/dcmb/DC/Middlebox
+
+server:
+  target_url: https://10.79.1.175:8000
+  cert_url: http://10.79.1.175:5000
+  request_path: /function/init
+  certserver_command: ["./certserver", "-log_level", "error"]
+  appserver_command: ["./appserver", "-log_level", "error"]
+
+client:
+  binary: ./client
+  method: POST
+  servername: server
+  data: {operation: init}
+  headers: ["Authorization: Bearer token", "Content-Type: application/json", "X-Testing: 1"]
+
+# The client primes these 50 persistent connections 100 ms apart before the
+# timed interval. Rate 10 is the known-stable control; rate 100 exercises the
+# previous simultaneous-first-handshake failure point.
+client_matrix:
+  modes: [persistent]
+  clients: [50]
+  rates: [10, 100]
+
+deployments:
+  - name: docker_sgxgo_full_reuse
+    kind: docker_gateway
+    prewarm_for_clients: true
+    pool_readiness_timeout_s: 180
+    worker_image: dcmiddlebox-worker:sgxgo
+    worker_reuse_dc: true
+    worker_sgx_enabled: true
+    worker_emit_quote: "1"
+    scale_up_by: 10
+    container_stats_scope: all
+    container_stats_collector: auto
+    worker_trace_enabled: false
+    docker_api_timeout_ms: 5000
+    docker_ready_timeout_ms: 15000

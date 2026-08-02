@@ -1,5 +1,9 @@
 # Experiment Controller Plan
 
+For the paper-facing description of the implemented setup, warmup rules,
+resource accounting, statistics, and figure semantics, see
+`PAPER_EXPERIMENT_METHOD.md`.
+
 Goal: build a Python experiment controller that starts/stops all roles, chooses parameters from YAML, stores logs/traces in structured run folders, supports local and SSH deployments, and converts trace binaries to CSV at the end of every run.
 
 ## Output Layout
@@ -386,11 +390,11 @@ Then add:
    `source=podman_stats_stream` and that newly created workers appear.
 2. Keep multi-machine orchestration and clock-synchronization validation as a
    separate pass.
-3. Done: additive client/gateway/worker connection bindings and per-delegation
-   IDs are emitted without changing old event codes. Request-server tracing is
-   deliberately deferred as a final touch; until then its cost stays in the
-   dissection residual. Also recheck direct persistent connection reuse against
-   the final application server before the paper campaign.
+3. Done locally: additive client/gateway/worker connection bindings,
+   per-delegation IDs, upstream-session bindings, and traced Go request-server
+   events are emitted. Direct and proxied persistent HTTP/1.1 reuse was checked
+   against the Go application server; each downstream middlebox TLS connection
+   owns one eagerly prepared upstream TLS connection.
 4. Done: `campaign.startup_only` skips servers, monitors, and client traffic;
    `configs_startup.yml` measures native, Gramine, SGX-Go, container, and both
    container+SGX startup paths. `dcmiddlebox-worker:sgx-standard-startup` is a
@@ -401,15 +405,38 @@ Then add:
    non-2xx responses, transport errors, and drops. The plotting normalizer now
    consumes these sources and marks affected points without requiring a
    `run.py` rewrite.
+6. Done in the client: persistent and resumption logical clients are primed
+   before measurement, 100 ms apart. Persistent transports keep the primed
+   HTTP/TLS connection; resumption transports keep the TLS session cache. The
+   timer and counters start only after every client reaches the priming barrier.
+   `warmup-client-*` trace IDs are excluded by the plotter. This prevents a
+   50-client SGX quote/DC burst from being confused with steady-state capacity.
+7. Before final Podman runs, verify the rootful `podman stats --all` stream and
+   record its source in metadata. Before final Gramine resource claims, verify
+   that process-tree RSS/CPU includes the intended Gramine process; it is host
+   RSS, not EPC usage.
 
 Prepared paper campaign files:
 
-- `benchmarking/configs.yml`: single client, offered-rate sweep, full strategy
-  and ablation matrix, including container resumption.
-- `benchmarking/configs_clients_scalability.yml`: persistent/resumption client
-  count and offered-rate sweep across representative strategies.
+- `benchmarking/configs.yml`: single-client canonical full-strategy sweep.
+  Fresh and resumption retain relaxed distribution points; persistent explores
+  the low end densely and adds points between 1000 and 5000 requests/s.
+- `benchmarking/configs_clients_scalability.yml`: explicit persistent points at
+  clients `1, 5, 10, 50`, each in closed loop and at aggregate 10 requests/s,
+  for Baremetal, SGX, Docker, and Docker + SGX.
+- `benchmarking/configs_handshake_capacity.yml`: complete fixed-10-client full
+  and resumed handshake sweep, including rates `1-5` and dense points between
+  1000 and 5000 handshakes/s.
 - `benchmarking/configs_startup.yml`: startup-only campaign, currently one
   smoke start/category; raise it to 20-30 starts/category for paper results.
+- `benchmarking/configs_latency_dissection.yml`: one-client, low-rate traced
+  flow campaign with worker traces enabled and trace dropping disabled.
+- `benchmarking/configs_docker_sgxgo_stagger_smoke.yml`: two-run focused check
+  of the 50-client Docker + SGX persistent case at 10 and 100 requests/s after
+  client priming.
+With `runs: 1`, the canonical matrices currently expand to 92 single-client
+runs, 32 scalability runs, 133 handshake-capacity runs, 5 startup runs, and 12
+dissection runs.
 
 ## Local Command Sequence
 
@@ -429,6 +456,7 @@ python3 benchmarking/run.py -c benchmarking/configs_docker_resumption_smoke.yml
 python3 benchmarking/run.py -c benchmarking/configs_docker_sgxgo_smoke.yml
 python3 benchmarking/run.py -c benchmarking/configs_docker_sgxgo_trace.yml
 python3 benchmarking/run.py -c benchmarking/configs_startup.yml
+python3 benchmarking/run.py -c benchmarking/configs_latency_dissection.yml
 ```
 
 Focused reruns for the repaired resource/startup paths:
@@ -443,7 +471,9 @@ Final local campaigns:
 ```bash
 python3 benchmarking/run.py -c benchmarking/configs.yml
 python3 benchmarking/run.py -c benchmarking/configs_clients_scalability.yml
+python3 benchmarking/run.py -c benchmarking/configs_handshake_capacity.yml
 python3 benchmarking/run.py -c benchmarking/configs_startup.yml
+python3 benchmarking/run.py -c benchmarking/configs_latency_dissection.yml
 ```
 
 Plot any completed campaign with:
@@ -590,10 +620,9 @@ the large matrix.
 - Clock synchronization metadata/checks for cross-node trace correlation.
 - Startup-only campaign is implemented in `configs_startup.yml`; only a
   parallel-container startup study remains optional.
-- Instrument the current Python request server with the same event names and
-  `X-Trace-ID` first. Do not rewrite it in Go solely for tracing; reconsider a
-  Go rewrite only if server-side overhead becomes a measured bottleneck or a
-  common binary writer is worth the maintenance change.
+- The Python request server has been replaced in benchmark configs by the
+  separate `cmd/appserver` Go executable. It uses HTTP/1.1 keep-alive, the
+  common binary tracer, and no per-request terminal logging.
 - Throughput/resource plotting: offered vs achieved throughput, saturation/errors, CPU and memory over time, and CPU/memory versus offered rate.
 - Verify the implemented rootful Podman stats stream on the Bovisa Podman
   version and retain the recorded fallback source in paper artifacts.
@@ -607,10 +636,13 @@ the large matrix.
   require direct, bare-metal, or shared-Gramine resumption runs.
 - Use 5 independent runs per throughput point, increasing to 10 for unstable
   p99 results; use 20-30 starts per startup category.
-- The current first-pass files intentionally use one 30-second repetition. The
-  single-client matrix uses rates `[1, 5, 10, 50, 100, 500, 1000]` for fresh
-  connections and `[1, 10, 100, 1000, 5000]` for persistent/resumption. The
-  scalability matrix uses clients `[1, 5, 10, 50]`.
+- The current first-pass files intentionally use one 30-second repetition.
+  Single-client persistent rates are
+  `[1, 2, 5, 10, 25, 50, 100, 250, 500, 750, 1000, 1250, 1500, 2000, 3000, 4000, 5000]`.
+  Handshake capacity uses fixed concurrency 10 with full and resumed rates
+  `[1, 2, 3, 4, 5, 10, 25, 50, 100, 250, 500, 750, 1000, 1250, 1500, 2000, 3000, 4000, 5000]`.
+  Scalability uses clients `[1, 5, 10, 50]` only at closed loop and aggregate
+  10 requests/s.
 - Standalone/shared `middlebox_sgxgo` is excluded from runtime and startup
   campaigns. SGX-Go is evaluated only as the worker inside the container
   strategy; shared Gramine uses the standard `middlebox` binary.
@@ -641,10 +673,12 @@ Implemented after the first paper campaigns:
   `[GATEWAY_POOL_READY]` line. Initial/max pool sizes are one worker for fresh,
   `clients + 1` for persistent (the extra worker absorbs the isolated client
   warmup), and `clients` for resumption.
-- Performance configs use `-log_level error -minimal_logs=true`. Readiness,
+- Performance configs use `-log_level error`. Readiness, worker/pool readiness,
   startup/listener failures, validation initialization/failures, delegation
-  prefetch failures, upstream proxy failures, trace startup, shutdown receipt,
-  and shutdown failures remain visible through unconditional stderr/log calls.
+  prefetch failures, upstream proxy failures, client/gateway drops, trace
+  startup, shutdown receipt, and shutdown failures remain unconditional.
+  `-log_level debug` enables semantic diagnostics; binary trace probes are
+  independent of text log level.
 
 Focused diagnostic reruns are available as:
 
@@ -654,3 +688,9 @@ benchmarking/configs_rerun_sgx_limits.yml
 benchmarking/configs_rerun_container_prewarm.yml
 benchmarking/configs_rerun_validation_logging.yml
 ```
+
+The controlled flow-dissection campaign is
+`benchmarking/configs_latency_dissection.yml`. It uses one client, relaxed
+mode-specific rates, complete server/worker traces, no trace dropping, fresh
+no-reuse handshakes, resumed container handshakes, and steady persistent
+requests. Runtime throughput/scalability campaigns keep worker tracing off.

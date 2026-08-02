@@ -3,10 +3,9 @@ campaign:
   output_root: experiments
   startup_only: true
   # Final paper: use 20-30 independent starts per deployment.
-  runs: 1
+  runs: 5
   duration_s: 0
-  warmup_s: 0
-  cooldown_s: 2
+  cooldown_s: 10
   readiness_timeout_s: 90
   trace_buffer_events: 100000
   trace_drop_on_full: true
@@ -14,34 +13,21 @@ campaign:
 # Full-handler startup includes schema/JWKS initialization. Refresh jwks.dat or
 # provide network access before the campaign so OIDC discovery is not a failure
 # or an uncontrolled startup-time component.
-
-hosts:
-  client: {host: localhost, ip: 127.0.0.1}
-  middlebox: {host: localhost, ip: 127.0.0.1}
-  server: {host: localhost, ip: 10.79.1.175}
-
-paths:
-  middlebox_dir: /home/bonsai/dcmb/DC/Middlebox
-
-server:
-  target_url: https://10.79.1.175:8000
-  cert_url: http://10.79.1.175:5000
-  request_path: /function/init
+# Delegation reuse and quote settings are intentionally absent: startup ends at
+# worker readiness, before a client can trigger delegation or attestation work.
 
 deployments:
   - name: startup_native
     kind: baremetal
-    command: ["./middlebox", "-log_level", "error", "-reuse_dc=true"]
+    command: ["./middlebox", "-log_level", "error"]
 
   - name: startup_gramine_sgx
     kind: gramine_sgx
-    command: ["gramine-sgx", "middlebox", "-log_level", "error", "-reuse_dc=true"]
-    env: {MBX_EMIT_QUOTE: "0"}
+    command: ["gramine-sgx", "middlebox", "-log_level", "error"]
 
   - name: startup_container
     kind: docker_gateway
     worker_image: dcmiddlebox-worker:baseline
-    worker_reuse_dc: true
     min_ready: 1
     scale_up_by: 1
     worker_trace_enabled: false
@@ -49,9 +35,7 @@ deployments:
   - name: startup_container_gramine_sgx
     kind: docker_gateway
     worker_image: dcmiddlebox-worker:sgx-standard-startup
-    worker_reuse_dc: true
     worker_sgx_enabled: true
-    worker_emit_quote: "0"
     min_ready: 1
     scale_up_by: 1
     worker_trace_enabled: false
@@ -60,9 +44,7 @@ deployments:
   - name: startup_container_sgxgo
     kind: docker_gateway
     worker_image: dcmiddlebox-worker:sgxgo
-    worker_reuse_dc: true
     worker_sgx_enabled: true
-    worker_emit_quote: "1"
     min_ready: 1
     scale_up_by: 1
     worker_trace_enabled: false

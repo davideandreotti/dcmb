@@ -26,7 +26,10 @@ import (
 	"dc/middlebox/internal/tracebind"
 )
 
-const benchmarkRequestTimeout = 5 * time.Second
+const (
+	benchmarkRequestTimeout   = 5 * time.Second
+	logicalClientPrimeSpacing = 100 * time.Millisecond
+)
 
 type headerList []string
 
@@ -649,8 +652,76 @@ func runLoopLogicalClients(
 		return err
 	}
 
-	end := time.Now().Add(duration)
+	httpClients := make([]*http.Client, clients)
+	transports := make([]*http.Transport, clients)
+	localClientIDs := make([]string, clients)
+	for clientIndex := 0; clientIndex < clients; clientIndex++ {
+		localClientIDs[clientIndex] = fmt.Sprintf("%s-%d", clientID, clientIndex+1)
+		var sessionCache tls.ClientSessionCache
+		if useSessionCache {
+			sessionCache = tls.NewLRUClientSessionCache(1)
+		}
+		httpClient, transport, err := newHTTPClient(caPath, serverName, closeAfterRequest, sessionCache)
+		if err != nil {
+			for _, createdTransport := range transports {
+				if createdTransport != nil {
+					createdTransport.CloseIdleConnections()
+				}
+			}
+			return err
+		}
+		httpClients[clientIndex] = httpClient
+		transports[clientIndex] = transport
+	}
+	defer func() {
+		for _, transport := range transports {
+			transport.CloseIdleConnections()
+		}
+	}()
+
+	info(fmt.Sprintf("%s priming started: clients=%d spacing=%v", modeName, clients, logicalClientPrimeSpacing))
+	primeStart := time.Now()
+	primeErrors := make(chan error, clients)
+	var primeWG sync.WaitGroup
+	for clientIndex := 0; clientIndex < clients; clientIndex++ {
+		primeWG.Add(1)
+		go func(clientIndex int) {
+			defer primeWG.Done()
+			startAt := primeStart.Add(time.Duration(clientIndex) * logicalClientPrimeSpacing)
+			if wait := time.Until(startAt); wait > 0 {
+				time.Sleep(wait)
+			}
+
+			traceID := fmt.Sprintf("warmup-client-%d", clientIndex+1)
+			benchtrace.Mark(benchtrace.ClientRequestStart, traceID, uint64(clientIndex+1))
+			_, status, err := doHTTPSRequest(
+				httpClients[clientIndex],
+				method,
+				rawURL,
+				headers,
+				body,
+				localClientIDs[clientIndex],
+				traceID,
+				closeAfterRequest,
+			)
+			if err != nil {
+				primeErrors <- fmt.Errorf("prime logical client %d: %w", clientIndex+1, err)
+				return
+			}
+			if status < 200 || status >= 300 {
+				primeErrors <- fmt.Errorf("prime logical client %d: HTTP status %d", clientIndex+1, status)
+			}
+		}(clientIndex)
+	}
+	primeWG.Wait()
+	close(primeErrors)
+	if err := <-primeErrors; err != nil {
+		return err
+	}
+	info(fmt.Sprintf("%s priming complete", modeName))
+
 	loopStart := time.Now()
+	end := loopStart.Add(duration)
 	closedLoop := rateRPS <= 0
 	globalInterval := time.Duration(0)
 	perClientRate := 0.0
@@ -697,23 +768,8 @@ func runLoopLogicalClients(
 		go func(clientIndex int) {
 			defer wg.Done()
 
-			localClientID := fmt.Sprintf("%s-%d", clientID, clientIndex+1)
-			var sessionCache tls.ClientSessionCache
-			if useSessionCache {
-				sessionCache = tls.NewLRUClientSessionCache(1)
-			}
-			httpClient, transport, err := newHTTPClient(caPath, serverName, closeAfterRequest, sessionCache)
-			if err != nil {
-				totalErrors.Add(1)
-				if stop.CompareAndSwap(false, true) {
-					select {
-					case errCh <- err:
-					default:
-					}
-				}
-				return
-			}
-			defer transport.CloseIdleConnections()
+			localClientID := localClientIDs[clientIndex]
+			httpClient := httpClients[clientIndex]
 
 			next := loopStart
 			if !closedLoop {
@@ -1094,13 +1150,3 @@ func main() {
 		panic(err)
 	}
 }
-
-// INCONTRO TESI 29 MAGGIO
-
-// per esempio sto bene a 10ms di latenza: fisso 20/25 ms di latenza e aumento il rate finché non vedo che la latenza media supera i 20ms, a quel punto so che sono al limite e posso fare un'analisi più dettagliata sui percentili. Se invece fisso un rate troppo alto fin da subito rischio di saturare il sistema e non capire qual è la capacità effettiva.
-// a quella soglia corrisponde throghput: ritardo medio o numero richieste inevase
-// loss > % -> sistema saturo, non riesce a sostenere il rate richiesto (throughput massimo)
-
-// inutile misurare latenza se c'è coda di inevase perchè stai misurando solo sulle prime
-
-//

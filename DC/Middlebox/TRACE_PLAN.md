@@ -18,6 +18,12 @@ Current state:
   quote/DC-generation events.
 - Gateway splice first-byte events and middlebox upstream/downstream boundary
   events are implemented.
+- `cmd/appserver` is a separate traced Go HTTP/1.1 TLS request server. It
+  records request-body receipt, response start, and response completion under
+  the forwarded `X-Trace-ID` without per-request text logging.
+- Each downstream middlebox TLS connection owns one eagerly established
+  upstream TLS connection. `middlebox_upstream_connection_bind` links that
+  native upstream-session ID to the existing connection key.
 
 ## Current Certserver Instrumentation
 
@@ -25,22 +31,24 @@ Current state:
 delegated-credential generation, quote verification, response, and error events.
 Legacy SNI events remain unchanged. New `*_by_id` events use the unique
 delegation ID and support concurrent correlation.
+Successful timing data stays in binary events. Certserver, request server,
+middlebox, and gateway default to `-log_level error`; readiness, shutdown, and
+errors remain visible in process logs. `-log_level debug` enables semantic
+diagnostics such as quote presence/verification, delegation issuance, worker
+selection state, and request/response handling. The middlebox only restores its
+legacy text timestamp stream when `-minimal_logs=false` is also supplied.
+The controller exposes the same policy through `client.log_level`, deployment
+`gateway_log_level`, and deployment `worker_log_level`; all default to `error`.
 
-## Missing Instrumentation
+## Request Server Instrumentation
 
-### Request Server
+Implemented in `cmd/appserver` using the same build-tagged tracer and flags as
+the other Go components:
 
-Instrument the final application/request server:
-
-- request received
-- application processing start/done
-- response written
-- error
-
-If the request server remains Python, either add a small compatible binary writer there or write CSV directly with the same event names.
-
-Add request correlation by reading and recording `X-Trace-ID`. Also add explicit
-application-processing start/done and response-first/last-byte events.
+- `requestserver_request_start` is emitted after the complete request body is read;
+- `requestserver_response_start` is emitted immediately before headers/body are written;
+- `requestserver_response_done` records completion or a write error;
+- all events use the forwarded `X-Trace-ID`.
 
 ### End-To-End Flow Correlation (Implemented Locally)
 
@@ -60,8 +68,10 @@ The implementation uses linked identifiers:
 4. The middlebox creates a delegation ID for each certserver call, emits a
    binding from TLS connection ID to delegation ID, and sends the delegation ID
    to certserver in the request body/header.
-5. Pending final touch: the application server records the forwarded
-   `X-Trace-ID`.
+5. The application server records the forwarded `X-Trace-ID` directly.
+6. The middlebox binds its dedicated upstream-session ID to the same connection
+   key, allowing eager upstream TCP/TLS work to be attributed to the downstream
+   handshake before HTTP headers exist.
 
 The plotting analysis resolves these bindings into one canonical flow ID, so
 the final processed table can present one request flow even though transport,
@@ -134,3 +144,6 @@ DOCKER_WORKER_TRACE_CONTAINER_DIR=/trace
 The gateway's own `-trace /trace/gateway.bin` path is independent from worker trace settings.
 
 Keep `-trace-drop-on-full=true` for latency experiments. Use `false` only when complete traces matter more than benchmark purity.
+The controller now forwards both the trace-buffer capacity and drop policy to
+Docker-created workers; the controlled dissection campaign therefore uses
+blocking, complete traces consistently across every component.

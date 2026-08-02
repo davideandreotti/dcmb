@@ -915,6 +915,8 @@ class DockerGatewayDeployment(Deployment):
             "-e",
             f"DOCKER_WORKER_REUSE_DC={worker_reuse_dc}",
             "-e",
+            f"DOCKER_WORKER_LOG_LEVEL={self.cfg.get('worker_log_level', 'error')}",
+            "-e",
             f"DOCKER_MIN_READY_OPERATORS={min_ready}",
             "-e",
             f"DOCKER_SCALE_UP_BY={scale_up_by}",
@@ -924,6 +926,10 @@ class DockerGatewayDeployment(Deployment):
             f"DOCKER_WORKER_TRACE_HOST_DIR={traces_host}",
             "-e",
             "DOCKER_WORKER_TRACE_CONTAINER_DIR=/trace",
+            "-e",
+            f"DOCKER_WORKER_TRACE_BUFFER_EVENTS={self.controller.trace_buffer_events}",
+            "-e",
+            f"DOCKER_WORKER_TRACE_DROP_ON_FULL={str(self.controller.trace_drop_on_full).lower()}",
             "-e",
             f"DOCKER_API_TIMEOUT_MS={self.cfg.get('docker_api_timeout_ms', 5000)}",
         ]
@@ -954,6 +960,8 @@ class DockerGatewayDeployment(Deployment):
             "-e",
             f"DOCKER_READY_TIMEOUT_MS={self.cfg.get('docker_ready_timeout_ms', 15000)}",
             image,
+            "-log_level",
+            str(self.cfg.get("gateway_log_level", "error")),
             "-trace",
             "/trace/gateway.bin",
             "-trace-buffer-events",
@@ -1204,11 +1212,22 @@ class Controller:
         default_clients_values = matrix.get("clients", [1])
         default_rates = matrix.get("rates", [10])
         default_rates_by_mode = matrix.get("rates_by_mode", {})
+        default_points = matrix.get("points")
         for deployment_cfg in deployments:
             modes = deployment_cfg.get("modes", default_modes)
             clients_values = deployment_cfg.get("clients", default_clients_values)
             deployment_rates_by_mode = deployment_cfg.get("rates_by_mode", default_rates_by_mode)
+            points = deployment_cfg.get("points", default_points)
             for mode in modes:
+                if points is not None:
+                    for point in points:
+                        clients = int(point["clients"])
+                        rate = float(point["rate"])
+                        if str(mode) == "fresh" and rate <= 0:
+                            continue
+                        for iteration in range(1, self.runs + 1):
+                            yield deployment_cfg, str(mode), clients, rate, iteration
+                    continue
                 rates = deployment_cfg.get(
                     "rates",
                     deployment_rates_by_mode.get(str(mode), default_rates),
@@ -1412,20 +1431,22 @@ class Controller:
 
     def start_appserver(self, run_ctx: RunContext) -> ManagedProcess:
         self._current_run = run_ctx
-        command = list(self.server_cfg.get("appserver_command", []))
-        if not command:
-            script = PROJECT_DIR.parent.parent / "PerformanceMeasuring" / "certs_server.py"
-            command = ["python3", str(script)]
-        env = {
-            "PYTHONUNBUFFERED": "1",
-            "SERVER_RUNTIME_LOG": str(run_ctx.stdout_dir / "server_runtime.log"),
-        }
+        command = list(self.server_cfg.get("appserver_command", ["./appserver"]))
+        command.extend(
+            [
+                "-trace",
+                str(run_ctx.traces_dir / "server.bin"),
+                "-trace-buffer-events",
+                str(self.trace_buffer_events),
+                f"-trace-drop-on-full={str(self.trace_drop_on_full).lower()}",
+            ]
+        )
         return self.spawn(
             role="server",
             cmd=command,
-            cwd=PROJECT_DIR.parent.parent,
-            env=env,
-            ready_patterns=["Application TLS server running"],
+            cwd=self.middlebox_dir,
+            env={},
+            ready_patterns=["[REQUEST_SERVER_READY]"],
         )
 
     def start_client(self, run_ctx: RunContext, mode: str, clients: int, rate: float, url: str) -> ManagedProcess:
@@ -1446,6 +1467,8 @@ class Controller:
             str(self.trace_buffer_events),
             f"-trace-drop-on-full={str(self.trace_drop_on_full).lower()}",
             "-continue-on-error=true",
+            "-log_level",
+            str(self.client_cfg.get("log_level", "error")),
         ]
         if mode in {"persistent", "resumption"}:
             command.extend(["-clients", str(clients)])

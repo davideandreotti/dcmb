@@ -29,6 +29,14 @@ const (
 	defaultQuoteTag = "middlebox-attestation-test"
 )
 
+var logLevel = "error"
+
+func debugf(format string, args ...any) {
+	if logLevel == "debug" {
+		log.Printf("[SERVER] "+format, args...)
+	}
+}
+
 type certRequest struct {
 	SNI          string `json:"sni"`
 	Quote        string `json:"quote"`
@@ -65,10 +73,6 @@ type quoteVerificationInfo struct {
 	CollateralExpiration    uint32
 	QuoteVerificationResult uint32
 	AcceptedNonTerminal     bool
-}
-
-func nowNS() int64 {
-	return time.Now().UnixNano()
 }
 
 func expectedReportData(tag string) []byte {
@@ -157,7 +161,7 @@ func (s *serverState) verifyAttestation(req certRequest) (int, string) {
 	}
 
 	if quoteB64 == "" {
-		fmt.Println("[SERVER] No attestation quote included; skipping quote verification")
+		debugf("no attestation quote supplied; verification skipped trace_id=%s sni=%s", req.traceID(), req.SNI)
 		return 0, ""
 	}
 
@@ -169,36 +173,33 @@ func (s *serverState) verifyAttestation(req certRequest) (int, string) {
 		return http.StatusBadRequest, "invalid attestation quote"
 	}
 
-	fmt.Printf("[SERVER] Attestation quote received (%d bytes)\n", len(quoteBytes))
-	fmt.Printf("[SERVER] BeginQuoteVerification = %d ns\n", nowNS())
+	verificationStarted := time.Now()
 	benchtrace.Mark(benchtrace.CertServerQuoteVerify, req.SNI, uint64(len(quoteBytes)))
 	benchtrace.Mark(benchtrace.CertServerQuoteVerifyByID, req.traceID(), uint64(len(quoteBytes)))
-	start := time.Now()
+	debugf("attestation quote received trace_id=%s sni=%s bytes=%d", req.traceID(), req.SNI, len(quoteBytes))
 	info, err := verifyQuote(quoteBytes, s.reportData)
-	elapsed := time.Since(start)
 	doneArg := uint64(info.QuoteVerificationResult)
 	if err != nil {
 		doneArg = 1
 	}
 	benchtrace.Mark(benchtrace.CertServerQuoteDone, req.SNI, doneArg)
 	benchtrace.Mark(benchtrace.CertServerQuoteDoneByID, req.traceID(), doneArg)
-	fmt.Printf("[SERVER] quote verification ms=%.3f dcap_ret=0x%x qv_result=0x%x collateral_expiration=%d accepted_non_terminal=%v\n",
-		float64(elapsed.Microseconds())/1000,
-		info.DCAPReturn,
-		info.QuoteVerificationResult,
-		info.CollateralExpiration,
-		info.AcceptedNonTerminal,
-	)
-	fmt.Printf("[SERVER] EndQuoteVerification = %d ns\n", nowNS())
-
+	verificationMS := float64(time.Since(verificationStarted).Nanoseconds()) / 1_000_000
 	if err != nil {
 		benchtrace.Mark(benchtrace.CertServerError, req.SNI, 12)
 		benchtrace.Mark(benchtrace.CertServerErrorByID, req.traceID(), 12)
-		fmt.Printf("[SERVER] Quote verification failed: %v\n", err)
+		fmt.Printf("[SERVER] Quote verification failed after %.3f ms: %v\n", verificationMS, err)
 		return http.StatusForbidden, "quote verification failed"
 	}
+	debugf(
+		"attestation quote accepted trace_id=%s dcap_return=0x%x qv_result=0x%x non_terminal=%t verification_ms=%.3f",
+		req.traceID(),
+		info.DCAPReturn,
+		info.QuoteVerificationResult,
+		info.AcceptedNonTerminal,
+		verificationMS,
+	)
 
-	fmt.Println("[SERVER] Quote verification succeeded")
 	return 0, ""
 }
 
@@ -209,19 +210,20 @@ func (s *serverState) handleCerts(w http.ResponseWriter, r *http.Request) {
 	}
 
 	benchtrace.Mark(benchtrace.CertServerRequest, "certs", 0)
-	fmt.Printf("t4: [SERVER] - ClientHelloLatency = %d ns\n", nowNS())
 
 	var req certRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		benchtrace.Mark(benchtrace.CertServerError, "certs", 1)
+		log.Printf("[SERVER] invalid delegation request JSON: %v", err)
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
 	benchtrace.Mark(benchtrace.CertServerRequestByID, req.traceID(), 0)
-	fmt.Printf("[SERVER] SNI requested: %s\n", req.SNI)
+	debugf("delegation request received trace_id=%s sni=%s", req.traceID(), req.SNI)
 	if strings.TrimSpace(req.SNI) == "" {
 		benchtrace.Mark(benchtrace.CertServerError, "certs", 2)
 		benchtrace.Mark(benchtrace.CertServerErrorByID, req.traceID(), 2)
+		log.Printf("[SERVER] delegation request missing SNI trace_id=%s", req.traceID())
 		http.Error(w, "missing sni", http.StatusBadRequest)
 		return
 	}
@@ -230,10 +232,8 @@ func (s *serverState) handleCerts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fmt.Printf("t5: [SERVER] - BeginAutoGenCerts = %d ns\n", nowNS())
 	benchtrace.Mark(benchtrace.CertServerGenerate, req.SNI, 0)
 	benchtrace.Mark(benchtrace.CertServerGenerateByID, req.traceID(), 0)
-	start := time.Now()
 	dcBytes, keyPEM, err := s.generateDelegation()
 	if err != nil {
 		benchtrace.Mark(benchtrace.CertServerGenerateDone, req.SNI, 1)
@@ -244,10 +244,9 @@ func (s *serverState) handleCerts(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "dc generation failed", http.StatusInternalServerError)
 		return
 	}
-	fmt.Printf("[SERVER] generate in-process ms=%.3f\n", float64(time.Since(start).Microseconds())/1000)
 	benchtrace.Mark(benchtrace.CertServerGenerateDone, req.SNI, 0)
 	benchtrace.Mark(benchtrace.CertServerGenerateDoneByID, req.traceID(), 0)
-	fmt.Printf("t6: [SERVER] - EndAutoGenCerts = %d ns\n", nowNS())
+	debugf("delegated credential generated trace_id=%s credential_bytes=%d key_bytes=%d", req.traceID(), len(dcBytes), len(keyPEM))
 
 	resp := certResponse{
 		CertB64:   s.certB64,
@@ -256,7 +255,6 @@ func (s *serverState) handleCerts(w http.ResponseWriter, r *http.Request) {
 		DCKeyB64:  base64.StdEncoding.EncodeToString(keyPEM),
 	}
 
-	fmt.Printf("t7: [SERVER] - Sending to middlebox: %d ns\n", nowNS())
 	benchtrace.Mark(benchtrace.CertServerResponse, req.SNI, 0)
 	benchtrace.Mark(benchtrace.CertServerResponseByID, req.traceID(), 0)
 	w.Header().Set("Content-Type", "application/json")
@@ -280,7 +278,13 @@ func main() {
 	tracePath := flag.String("trace", "", "binary trace output path")
 	traceBuffer := flag.Int("trace-buffer-events", 100000, "trace buffer capacity in events")
 	traceDrop := flag.Bool("trace-drop-on-full", true, "drop trace events when the buffer is full")
+	logLevelFlag := flag.String("log_level", "error", "log level: error or debug")
 	flag.Parse()
+
+	logLevel = strings.ToLower(strings.TrimSpace(*logLevelFlag))
+	if logLevel != "error" && logLevel != "debug" {
+		log.Fatalf("invalid -log_level %q: expected error or debug", *logLevelFlag)
+	}
 
 	if err := benchtrace.Start(*tracePath, *traceBuffer, *traceDrop); err != nil {
 		log.Fatal(err)
