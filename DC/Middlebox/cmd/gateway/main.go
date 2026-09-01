@@ -26,6 +26,7 @@ import (
 	"dc/middlebox/internal/ticketidentity"
 	"dc/middlebox/internal/tlshello"
 	benchtrace "dc/middlebox/internal/trace"
+	"dc/middlebox/internal/tracebind"
 )
 
 const (
@@ -117,8 +118,16 @@ type kubernetesPod struct {
 	} `json:"status"`
 }
 
+var gatewayLogLevel = "error"
+
 func info(msg string) {
-	fmt.Fprintln(os.Stderr, msg)
+	if gatewayLogLevel == "debug" {
+		fmt.Fprintln(os.Stderr, msg)
+	}
+}
+
+func gatewayErrorf(format string, args ...any) {
+	log.Printf("[GATEWAY] "+format, args...)
 }
 
 func getEnv(key string, fallback string) string {
@@ -626,7 +635,7 @@ func (p *backendPool) finishBackend(backend backendTarget, failed bool) {
 	p.releaseLease(backend.name)
 	if p.k8s != nil && p.k8s.deleteAfterUse {
 		if err := p.k8s.deleteBackend(backend.name); err != nil {
-			info("[GATEWAY] delete backend failed: " + err.Error())
+			gatewayErrorf("delete backend failed: %v", err)
 		} else {
 			info("[GATEWAY] deleted backend pod " + backend.name)
 		}
@@ -716,12 +725,11 @@ func bindTicketBackend(pool *backendPool, affinity *ticketAffinity, backend back
 		return
 	}
 	if err := affinity.bind(backend, hello.ServerName); err != nil {
-		info("[GATEWAY] ticket affinity bind failed: " + err.Error())
+		gatewayErrorf("ticket affinity bind failed: %v", err)
 	}
 }
 
 func handleClientConn(connID string, c net.Conn, preface []byte, hello *tlshello.Info, pool *backendPool, st *gatewayState, noReadyPolicy string, noReadyWaitSeconds int, noReadyRetryMs int) {
-	info(fmt.Sprintf("t26: [GATEWAY] - operator_selection_start = %d ns", time.Now().UnixNano()))
 	benchtrace.Mark(benchtrace.GatewayWorkerSelectStart, connID, 0)
 	backend, _, err := pickBackendForClient(pool, st.affinity, hello, noReadyPolicy, noReadyWaitSeconds, noReadyRetryMs)
 	if err != nil {
@@ -742,8 +750,6 @@ func serveClientWithBackend(connID string, c net.Conn, preface []byte, pool *bac
 
 	st.lastBackend.Store(backend.name)
 	st.lastResolution.Store("ok")
-	info(fmt.Sprintf("t27: [GATEWAY] - operator_selected = %d ns", time.Now().UnixNano()))
-
 	backendAddr := net.JoinHostPort(backend.ip, operatorTLSPort)
 	benchtrace.Mark(benchtrace.GatewayBackendDialStart, connID, 0)
 	backendConn, dialErr := net.DialTimeout("tcp", backendAddr, 2*time.Second)
@@ -758,6 +764,11 @@ func serveClientWithBackend(connID string, c net.Conn, preface []byte, pool *bac
 		return
 	}
 	benchtrace.Mark(benchtrace.GatewayBackendDialDone, connID, 0)
+	benchtrace.Mark(
+		benchtrace.GatewayBackendConnectionBind,
+		connID,
+		tracebind.ConnectionKey(backendConn.LocalAddr(), backendConn.RemoteAddr()),
+	)
 	defer backendConn.Close()
 	finishedBackend := false
 	finishBackend := func(failed bool) {
@@ -775,8 +786,8 @@ func serveClientWithBackend(connID string, c net.Conn, preface []byte, pool *bac
 	}()
 
 	st.forwarded.Add(1)
-	info(fmt.Sprintf("t28: [GATEWAY] - gateway_to_operator_send = %d ns", time.Now().UnixNano()))
 	if len(preface) > 0 {
+		benchtrace.Mark(benchtrace.GatewayClientToBackendFirst, connID, uint64(len(preface)))
 		if _, err := backendConn.Write(preface); err != nil {
 			finishBackend(true)
 			st.dropped.Add(1)
@@ -787,7 +798,7 @@ func serveClientWithBackend(connID string, c net.Conn, preface []byte, pool *bac
 		}
 	}
 	benchtrace.Mark(benchtrace.GatewaySpliceStart, connID, 0)
-	splice(c, backendConn)
+	splice(c, backendConn, connID, len(preface) > 0)
 	benchtrace.Mark(benchtrace.GatewaySpliceDone, connID, 0)
 }
 
@@ -807,10 +818,16 @@ func logContainerStatus(event string, pool *backendPool, queue <-chan queuedClie
 
 func logClientDrop(reason string, pool *backendPool, queue <-chan queuedClient) {
 	if pool == nil || pool.docker == nil {
-		info("[GATEWAY] request_dropped reason=" + strconv.Quote(reason))
+		gatewayErrorf("request_dropped reason=%s", strconv.Quote(reason))
 		return
 	}
-	logContainerStatus("request_dropped reason="+strconv.Quote(reason), pool, queue)
+	queueLen := -1
+	queueCap := -1
+	if queue != nil {
+		queueLen = len(queue)
+		queueCap = cap(queue)
+	}
+	gatewayErrorf("request_dropped reason=%s %s", strconv.Quote(reason), pool.docker.statusString(queueLen, queueCap))
 }
 
 func runClientQueue(ctx context.Context, queue <-chan queuedClient, cfg clientQueueConfig, pool *backendPool, st *gatewayState) {
@@ -823,7 +840,6 @@ func runClientQueue(ctx context.Context, queue <-chan queuedClient, cfg clientQu
 		case client = <-queue:
 		}
 
-		info(fmt.Sprintf("t26: [GATEWAY] - operator_selection_start = %d ns", time.Now().UnixNano()))
 		benchtrace.Mark(benchtrace.GatewayQueueLeave, client.id, uint64(len(queue)))
 		benchtrace.Mark(benchtrace.GatewayWorkerSelectStart, client.id, 0)
 		backend, _, err := pickBackendUntilForClient(ctx, pool, st.affinity, client.hello, client.deadline, cfg.retry)
@@ -854,19 +870,44 @@ func drainClientQueue(queue <-chan queuedClient) {
 	}
 }
 
-func splice(a net.Conn, b net.Conn) {
+type firstTraceReader struct {
+	source net.Conn
+	event  uint32
+	id     string
+	marked bool
+}
+
+func (r *firstTraceReader) Read(p []byte) (int, error) {
+	n, err := r.source.Read(p)
+	if n > 0 && !r.marked {
+		r.marked = true
+		benchtrace.Mark(r.event, r.id, uint64(n))
+	}
+	return n, err
+}
+
+func splice(a net.Conn, b net.Conn, connID string, clientPrefaceMarked bool) {
 	var wg sync.WaitGroup
 	wg.Add(2)
 
 	go func() {
 		defer wg.Done()
-		_, _ = io.Copy(a, b)
+		_, _ = io.Copy(a, &firstTraceReader{
+			source: b,
+			event:  benchtrace.GatewayBackendToClientFirst,
+			id:     connID,
+		})
 		_ = a.SetDeadline(time.Now())
 	}()
 
 	go func() {
 		defer wg.Done()
-		_, _ = io.Copy(b, a)
+		_, _ = io.Copy(b, &firstTraceReader{
+			source: a,
+			event:  benchtrace.GatewayClientToBackendFirst,
+			id:     connID,
+			marked: clientPrefaceMarked,
+		})
 		_ = b.SetDeadline(time.Now())
 	}()
 
@@ -899,7 +940,13 @@ func main() {
 	tracePathFlag := flag.String("trace", "", "trace output file; requires build tag trace")
 	traceBufferFlag := flag.Int("trace-buffer-events", 100000, "trace buffer capacity in events")
 	traceDropFlag := flag.Bool("trace-drop-on-full", true, "drop trace events instead of blocking when trace buffer is full")
+	logLevelFlag := flag.String("log_level", "error", "log level: error or debug")
 	flag.Parse()
+
+	gatewayLogLevel = strings.ToLower(strings.TrimSpace(*logLevelFlag))
+	if gatewayLogLevel != "error" && gatewayLogLevel != "debug" {
+		log.Fatalf("invalid -log_level %q: expected error or debug", *logLevelFlag)
+	}
 
 	if err := benchtrace.Start(*tracePathFlag, *traceBufferFlag, *traceDropFlag); err != nil {
 		log.Fatalf("trace start: %v", err)
@@ -1013,7 +1060,7 @@ func main() {
 		clientConn, err := ln.Accept()
 		if err != nil {
 			if ctx.Err() != nil {
-				info("[GATEWAY] shutting down")
+				fmt.Fprintln(os.Stderr, "[GATEWAY] shutting down")
 				return
 			}
 			log.Printf("accept failed: %v", err)
@@ -1023,7 +1070,11 @@ func main() {
 		st.accepted.Add(1)
 		connID := fmt.Sprintf("gateway-conn-%d", gatewayConnCounter.Add(1))
 		benchtrace.Mark(benchtrace.GatewayClientAccepted, connID, uint64(st.accepted.Load()))
-		info(fmt.Sprintf("t25: [GATEWAY] - client_to_gateway_received = %d ns", time.Now().UnixNano()))
+		benchtrace.Mark(
+			benchtrace.GatewayClientConnectionBind,
+			connID,
+			tracebind.ConnectionKey(clientConn.LocalAddr(), clientConn.RemoteAddr()),
+		)
 		logContainerStatus("request_received", pool, clientQueue)
 
 		var preface []byte

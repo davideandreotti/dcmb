@@ -4,6 +4,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"strings"
 
@@ -44,6 +45,29 @@ var messageTypes = []MessageType{
 	photoAssignmentMessageType,
 }
 
+var compiledSchemas map[string]*jsonschema.Schema
+
+func initializeValidation() error {
+	compiled := make(map[string]*jsonschema.Schema)
+	for _, messageType := range messageTypes {
+		for _, schema := range messageType.Schemas {
+			filename := schema.JsonSchemaFilename
+			if _, exists := compiled[filename]; exists {
+				continue
+			}
+
+			validator, err := jsonschema.Compile(filename)
+			if err != nil {
+				return fmt.Errorf("compile JSON schema %s: %w", filename, err)
+			}
+			compiled[filename] = validator
+		}
+	}
+
+	compiledSchemas = compiled
+	return nil
+}
+
 func (m *MessageType) MatchRequest(method string, uri string) bool {
 	//	return method == m.Method && uri == m.Uri
 	if uri != m.Uri {
@@ -81,11 +105,11 @@ func (m *MessageType) ValidateSchemas(body []byte) bool {
 }
 
 func ValidateJSONSchema(jsonFragment any, jsonSchemaFilename string) error {
-	sch, err := jsonschema.Compile(jsonSchemaFilename)
-	if err != nil {
-		return err
+	sch, ok := compiledSchemas[jsonSchemaFilename]
+	if !ok {
+		return fmt.Errorf("JSON schema %s was not initialized", jsonSchemaFilename)
 	}
-	if err = sch.Validate(jsonFragment); err != nil {
+	if err := sch.Validate(jsonFragment); err != nil {
 		return err
 	}
 	return nil

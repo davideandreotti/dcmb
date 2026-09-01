@@ -1,6 +1,6 @@
 libos.entrypoint = "/middlebox_sgxgo"
 
-loader.log_level = "warning"
+loader.log_level = "error"
 loader.env.LD_LIBRARY_PATH = "/lib:/usr/lib:/usr/lib/x86_64-linux-gnu"
 loader.env.GODEBUG = "netdns=go"
 loader.env.GO_SGX_RUNTIME = "1"
@@ -38,7 +38,7 @@ fs.mounts = [
 # SGX CONFIG
 # =========================
 
-sgx.debug = true
+sgx.debug = false
 sgx.enclave_size = "128M"
 sgx.edmm_enable = false
 sgx.max_threads = 10

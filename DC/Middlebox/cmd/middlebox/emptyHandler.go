@@ -6,6 +6,10 @@ import (
 	"net/http"
 )
 
+func initializeValidation() error {
+	return nil
+}
+
 func processRequest(inputData *http.Request) (bool, string, any) {
 	return true, "", nil
 }

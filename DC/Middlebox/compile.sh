@@ -146,6 +146,14 @@ build_docker_images() {
         -t dcmiddlebox-worker:sgxgo \
         "$PROJECT_ROOT"
 
+    if [[ "${BUILD_STARTUP_IMAGE:-0}" == "1" ]]; then
+        echo "[COMPILE] building startup-only dcmiddlebox-worker:sgx-standard-startup"
+        docker build \
+            -f "$SCRIPT_DIR/Dockerfile.worker_sgx_startup" \
+            -t dcmiddlebox-worker:sgx-standard-startup \
+            "$PROJECT_ROOT"
+    fi
+
     echo "[COMPILE] OK: docker images dcmiddlebox-worker:baseline dcmiddlebox-worker:emptyhandler dcmiddlebox-worker:sgxgo dcmb_gateway:docker"
 }
 
@@ -154,6 +162,7 @@ build_docker_images() {
     use_go_toolchain "$CUSTOM_GOROOT"
     build "client" "cmd/client" "$SCRIPT_DIR/client" "${common_build_args[@]}"
     build "certserver" "cmd/certserver" "$SCRIPT_DIR/certserver" "${certserver_build_args[@]}"
+    build "appserver" "cmd/appserver" "$SCRIPT_DIR/appserver" "${common_build_args[@]}"
     build "middlebox" "cmd/middlebox" "$SCRIPT_DIR/middlebox" "${middlebox_build_args[@]}"
     build "middlebox_emptyhandler" "cmd/middlebox" "$SCRIPT_DIR/middlebox_emptyhandler" "${middlebox_empty_build_args[@]}"
     build "middlebox_gateway" "cmd/gateway" "$SCRIPT_DIR/middlebox_gateway" "${common_build_args[@]}"

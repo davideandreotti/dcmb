@@ -82,6 +82,7 @@ Log_container.txt
 **/Runtime/
 **/Analisi/
 /DC/Middlebox/experiments/
+/DC/bovisa/experiments/
 **/*.pdf
 **/*.png
 
@@ -110,4 +111,4 @@ DC/Middlebox/*.manifest.sgx
 DC/Middlebox/*.sig
 DC/Middlebox/middlebox_sgxgo_emptyhandler
 DC/Middlebox/.venv*/
-/DC/bovisa/experiments/
+DC/Middlebox/appserver

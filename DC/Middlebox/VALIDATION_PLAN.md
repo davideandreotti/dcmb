@@ -174,7 +174,29 @@ GOROOT=/home/bonsai/dcmb/DC/go PATH=/home/bonsai/dcmb/DC/go/bin:$PATH GOTOOLCHAI
 git diff --check
 ```
 
-## Missing / Still To Do
+## Completed Follow-Up And Remaining Work
+
+### JSON Schema Compilation Policy - Implemented
+
+`ValidateSchemas` still unmarshals the request body once and keeps the existing
+handler and `MessageType` structure. `initializeValidation` now compiles every
+unique schema filename referenced by `messageTypes` once at process startup and
+stores the immutable validators in:
+
+```go
+map[string]*jsonschema.Schema
+```
+
+`ValidateJSONSchema` now performs only a map lookup and validation. Startup
+occurs before the state server and TLS listener are announced, so worker-ready
+means schemas are available at steady-state speed. Both full and empty builds
+emit `middlebox_schema_compile_start` and
+`middlebox_schema_compile_done`; the empty build's measured interval contains
+only the no-op initialization call. A done-event argument of `1` precedes a
+fatal schema initialization error.
+
+No lazy/runtime compilation variant was added. If startup research later needs
+one, keep it explicitly separate from normal runtime campaigns.
 
 ### Run Full Build
 
@@ -214,14 +236,11 @@ The controller already supports this through `command`.
 
 ### JSON Schema Benchmark Coverage
 
-`/function/init` currently matches `initMessageType`, which has no schema.
-Benchmarks against `/function/init` exercise token/header validation, endpoint
-matching, session lookup, and response processing, but not JSON schema
-validation.
-
-To measure JSON schema validation, add a benchmark case that targets an endpoint
-with schemas, for example one of the product/photo endpoints in
-`messageTypes.go`, and provide a valid JSON body.
+`/function/init` now references `schemas/init-request-schema.json`, and benchmark
+requests provide the matching JSON body. It therefore exercises token/header
+validation, endpoint/session matching, JSON decoding, schema validation, and
+response processing. Keep a negative smoke test with an invalid body so a broken
+or bypassed schema path is caught before final campaigns.
 
 ### Container No-Validation Variant
 

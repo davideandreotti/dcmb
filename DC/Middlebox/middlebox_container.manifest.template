@@ -1,9 +1,8 @@
-libos.entrypoint = "/middlebox_sgxgo"
+libos.entrypoint = "/middlebox"
 
 loader.log_level = "error"
 loader.env.LD_LIBRARY_PATH = "/lib:/usr/lib:/usr/lib/x86_64-linux-gnu"
 loader.env.GODEBUG = "netdns=go"
-loader.env.GO_SGX_RUNTIME = "1"
 loader.insecure__use_cmdline_argv = true
 loader.env.OPERATOR_TARGET = { passthrough = true }
 loader.env.OPERATOR_CERT_URL = { passthrough = true }
@@ -11,7 +10,7 @@ loader.env.MBX_EMIT_QUOTE = { passthrough = true }
 loader.env.DCMB_TICKET_IDENTITY_KEY = { passthrough = true }
 sys.enable_sigterm_injection = true
 loader.env.GOMAXPROCS = "2"
-loader.env.GOMEMLIMIT = "52MiB"
+loader.env.GOMEMLIMIT = "1638MiB"
 
 fs.mounts = [
   { path = "/lib", uri = "file:{{ gramine.runtimedir() }}" },
@@ -24,14 +23,14 @@ fs.mounts = [
 ]
 
 sgx.debug = false
-sgx.enclave_size = "64M"
+sgx.enclave_size = "2G"
 sgx.edmm_enable = false
 sgx.max_threads = 16
 sgx.remote_attestation = "dcap"
 sgx.file_check_policy = "allow_all_but_log"
 
 sgx.trusted_files = [
-  "file:middlebox_sgxgo",
+  "file:middlebox",
   "file:schemas/",
   "file:{{ gramine.runtimedir() }}/"
 ]

@@ -1,6 +1,6 @@
 libos.entrypoint = "/middlebox"
 
-loader.log_level = "debug"
+loader.log_level = "error"
 loader.env.LD_LIBRARY_PATH = "/lib:/usr/lib:/usr/lib/x86_64-linux-gnu"
 loader.env.GODEBUG = "netdns=go"
 loader.insecure__use_cmdline_argv = true
@@ -8,9 +8,10 @@ loader.env.OPERATOR_TARGET = { passthrough = true }
 loader.env.OPERATOR_CERT_URL = { passthrough = true }
 loader.env.MBX_EMIT_QUOTE = { passthrough = true }
 loader.env.DCMB_TICKET_IDENTITY_KEY = { passthrough = true }
+loader.env.DCMB_GRAMINE_SHARED = "1"
 sys.enable_sigterm_injection = true
-loader.env.GOMAXPROCS = "2"
-loader.env.GOMEMLIMIT = "1638MiB"
+#loader.env.GOMAXPROCS = "2"
+loader.env.GOMEMLIMIT = "1300MiB"
 
 fs.mounts = [
   # Gramine runtime
@@ -37,10 +38,10 @@ fs.mounts = [
 # SGX CONFIG
 # =========================
 
-sgx.debug = true
+sgx.debug = false
 sgx.enclave_size = "2G"
 sgx.edmm_enable = {{ 'true' if env.get('EDMM', '0') == '1' else 'false' }}
-sgx.max_threads = 16
+sgx.max_threads = 40
 sgx.remote_attestation = "dcap"
 #sgx.enable_stats = true
 #sgx.profile.enable = "all"

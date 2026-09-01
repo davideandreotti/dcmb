@@ -1,11 +1,11 @@
 campaign:
-  name: clients_scalability
+  name: paper_aggregate_missing
   output_root: experiments
-  # Final paper: use >=5 runs/point, 10 for noisy p99 points; startup-only uses 20-30.
+  # Final paper: use >=5 runs/point, 10 for noisy p99 points.
   runs: 1
   duration_s: 30
   warmup_s: 1
-  cooldown_s: 10
+  cooldown_s: 2
   readiness_timeout_s: 30
   cpu_interval_s: 0.2
   trace_buffer_events: 100000
@@ -37,7 +37,6 @@ server:
 
 client:
   binary: ./client
-  pacing: timer
   method: POST
   servername: server
   data:
@@ -46,47 +45,22 @@ client:
     - "Authorization: Bearer token"
     - "Content-Type: application/json"
     - "X-Testing: 1"
-  max_in_flight: 1024
 
+# Explicit points avoid running the full clients x rates Cartesian product.
+# Rate 0 measures closed-loop capacity. The existing scalability campaign
+# already contains (1 client, 10 rps) and (10 clients, 100 rps), so only the
+# two missing 10 requests/s/client points are repeated here.
 client_matrix:
   modes: [persistent]
-  # Missing relaxed-load points shared by every deployment.
   points:
-    - {clients: 1, rate: 10}
-    - {clients: 5, rate: 10}
-    - {clients: 10, rate: 10}
-    - {clients: 20, rate: 10}
-    - {clients: 30, rate: 10}
-    - {clients: 40, rate: 10}
-    - {clients: 50, rate: 10}
-
-# NOTE: on the rootful Podman host, verify that the streaming stats collector
-# reports source=podman_stats_stream in metadata.json; it falls back to
-# podman_stats_no_stream if that Podman version cannot stream --all.
+    - {clients: 1, rate: 0}
+    - {clients: 5, rate: 0}
+    - {clients: 5, rate: 50}
+    - {clients: 10, rate: 0}
+    - {clients: 50, rate: 0}
+    - {clients: 50, rate: 500}
 
 deployments:
-  - name: baremetal_full_reuse
-    kind: baremetal
-    command: ["./middlebox", "-log_level", "error", "-reuse_dc=true"]
-
-  - name: sgx_full_reuse
-    kind: gramine_sgx
-    command: ["gramine-sgx", "middlebox", "-log_level", "error", "-reuse_dc=true"]
-    env:
-      MBX_EMIT_QUOTE: "1"
-    # Deployment-specific override: recover the failed high-concurrency
-    # closed-loop points in addition to the common 10 requests/s sweep.
-    points:
-      - {clients: 1, rate: 10}
-      - {clients: 5, rate: 10}
-      - {clients: 10, rate: 10}
-      - {clients: 20, rate: 10}
-      - {clients: 30, rate: 10}
-      - {clients: 40, rate: 10}
-      - {clients: 50, rate: 10}
-      # - {clients: 40, rate: 0}
-      # - {clients: 50, rate: 0}
-
   - name: docker_full_reuse
     kind: docker_gateway
     prewarm_for_clients: true
@@ -101,7 +75,7 @@ deployments:
   - name: docker_sgxgo_full_reuse
     kind: docker_gateway
     prewarm_for_clients: true
-    pool_readiness_timeout_s: 120
+    pool_readiness_timeout_s: 180
     worker_image: dcmiddlebox-worker:sgxgo
     worker_reuse_dc: true
     worker_sgx_enabled: true

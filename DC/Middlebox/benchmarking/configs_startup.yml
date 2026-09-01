@@ -1,0 +1,54 @@
+campaign:
+  name: middlebox_startup
+  output_root: experiments
+  startup_only: true
+  # Final paper: use 20-30 independent starts per deployment.
+  runs: 5
+  duration_s: 0
+  cooldown_s: 10
+  readiness_timeout_s: 90
+  trace_buffer_events: 100000
+  trace_drop_on_full: true
+
+# Full-handler startup includes schema/JWKS initialization. Refresh jwks.dat or
+# provide network access before the campaign so OIDC discovery is not a failure
+# or an uncontrolled startup-time component.
+# Delegation reuse and quote settings are intentionally absent: startup ends at
+# worker readiness, before a client can trigger delegation or attestation work.
+
+deployments:
+  - name: startup_native
+    kind: baremetal
+    command: ["./middlebox", "-log_level", "error"]
+
+  - name: startup_gramine_sgx
+    kind: gramine_sgx
+    command: ["gramine-sgx", "middlebox", "-log_level", "error"]
+
+  - name: startup_container
+    kind: docker_gateway
+    worker_image: dcmiddlebox-worker:baseline
+    min_ready: 1
+    scale_up_by: 1
+    worker_trace_enabled: false
+
+  - name: startup_container_gramine_sgx
+    kind: docker_gateway
+    worker_image: dcmiddlebox-worker:sgx-standard-startup
+    worker_sgx_enabled: true
+    min_ready: 1
+    scale_up_by: 1
+    worker_trace_enabled: false
+    docker_ready_timeout_ms: 60000
+
+  - name: startup_container_sgxgo
+    kind: docker_gateway
+    worker_image: dcmiddlebox-worker:sgxgo
+    worker_sgx_enabled: true
+    min_ready: 1
+    scale_up_by: 1
+    worker_trace_enabled: false
+
+  - name: startup_sgxgo
+    kind: gramine_sgx
+    command: ["gramine-sgx", "middlebox_sgxgo", "-log_level", "error"]

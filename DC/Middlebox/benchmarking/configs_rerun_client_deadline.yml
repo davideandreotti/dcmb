@@ -1,0 +1,47 @@
+campaign:
+  name: rerun_client_deadline
+  output_root: experiments
+  runs: 1
+  duration_s: 15
+  warmup_s: 1
+  cooldown_s: 2
+  readiness_timeout_s: 30
+  cpu_interval_s: 0.2
+  trace_buffer_events: 100000
+  trace_drop_on_full: true
+
+hosts:
+  client: {host: localhost, ip: 127.0.0.1, work_dir: /home/bonsai/dcmb/DC/Middlebox}
+  middlebox: {host: localhost, ip: 127.0.0.1, work_dir: /home/bonsai/dcmb/DC/Middlebox}
+  server: {host: localhost, ip: 10.79.1.175, work_dir: /home/bonsai/dcmb}
+
+paths:
+  middlebox_dir: /home/bonsai/dcmb/DC/Middlebox
+
+server:
+  target_url: https://10.79.1.175:8000
+  cert_url: http://10.79.1.175:5000
+  request_path: /function/init
+  certserver_command: ["./certserver"]
+  appserver_command: ["./appserver"]
+
+client:
+  binary: ./client
+  method: POST
+  servername: server
+  data: {operation: init}
+  headers: ["Authorization: Bearer token", "Content-Type: application/json", "X-Testing: 1"]
+  max_in_flight: 1024
+
+client_matrix:
+  modes: [persistent]
+  clients: [50]
+  rates: [1]
+
+deployments:
+  - name: direct
+    kind: direct
+
+  - name: baremetal_full_reuse
+    kind: baremetal
+    command: ["./middlebox", "-log_level", "error", "-minimal_logs=true", "-reuse_dc=true"]

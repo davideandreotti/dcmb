@@ -1,6 +1,7 @@
 campaign:
   name: docker_resumption_smoke
   output_root: experiments
+  # Final paper: use >=5 runs/point, 10 for noisy p99 points; startup-only uses 20-30.
   runs: 1
   duration_s: 5
   warmup_s: 1
@@ -26,14 +27,13 @@ hosts:
 
 paths:
   middlebox_dir: /home/bonsai/dcmb/DC/Middlebox
-  server_app_script: /home/bonsai/dcmb/PerformanceMeasuring/certs_server.py
 
 server:
   target_url: https://10.79.1.175:8000
   cert_url: http://10.79.1.175:5000
   request_path: /function/init
   certserver_command: ["./certserver"]
-  appserver_command: ["python3", "-u", "/home/bonsai/dcmb/PerformanceMeasuring/certs_server.py"]
+  appserver_command: ["./appserver"]
 
 client:
   binary: ./client
@@ -55,9 +55,9 @@ client_matrix:
 deployments:
   - name: docker_full_resumption_smoke
     kind: docker_gateway
-    runtime: podman
+    runtime: docker
     network: dcmb-middlebox-net
-    socket_host: /run/podman/podman.sock
+    socket_host: /var/run/docker.sock
     socket_container: /var/run/docker.sock
     worker_image: dcmiddlebox-worker:baseline
     worker_certs_host_path: /home/bonsai/dcmb/certs_external
@@ -73,9 +73,9 @@ deployments:
 
   - name: docker_empty_resumption_smoke
     kind: docker_gateway
-    runtime: podman
+    runtime: docker
     network: dcmb-middlebox-net
-    socket_host: /run/podman/podman.sock
+    socket_host: /var/run/docker.sock
     socket_container: /var/run/docker.sock
     worker_image: dcmiddlebox-worker:emptyhandler
     worker_certs_host_path: /home/bonsai/dcmb/certs_external
@@ -91,9 +91,9 @@ deployments:
 
   - name: docker_sgxgo_full_resumption_smoke
     kind: docker_gateway
-    runtime: podman
+    runtime: docker
     network: dcmb-middlebox-net
-    socket_host: /run/podman/podman.sock
+    socket_host: /var/run/docker.sock
     socket_container: /var/run/docker.sock
     worker_image: dcmiddlebox-worker:sgxgo
     worker_certs_host_path: /home/bonsai/dcmb/certs_external
@@ -101,7 +101,7 @@ deployments:
     worker_ca: /home/bonsai/dcmb/certs_external/ca.crt
     worker_reuse_dc: false
     worker_sgx_enabled: true
-    worker_emit_quote: "0"
+    worker_emit_quote: "1"
     ticket_identity_key: dcmb-resumption-smoke
     min_ready: 1
     scale_up_by: 1

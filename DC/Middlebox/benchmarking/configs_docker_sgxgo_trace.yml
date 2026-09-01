@@ -1,7 +1,6 @@
 campaign:
-  name: docker_sgxgo_smoke
+  name: docker_sgxgo_trace
   output_root: experiments
-  # Final paper: use >=5 runs/point, 10 for noisy p99 points; startup-only uses 20-30.
   runs: 1
   duration_s: 5
   warmup_s: 1
@@ -50,25 +49,19 @@ client:
 client_matrix:
   modes: [persistent]
   clients: [1]
-  rates: [0]
+  rates: [1]
 
 deployments:
-  - name: docker_sgxgo_smoke
+  - name: docker_sgxgo_trace
     kind: docker_gateway
-    runtime: docker
-    network: dcmb-middlebox-net
-    socket_host: /var/run/docker.sock
-    socket_container: /var/run/docker.sock
     worker_image: dcmiddlebox-worker:sgxgo
-    worker_certs_host_path: /home/bonsai/dcmb/certs_external
-    worker_certs_container_path: /home/bonsai/dcmb/certs_external
-    worker_ca: /home/bonsai/dcmb/certs_external/ca.crt
     worker_reuse_dc: true
     worker_sgx_enabled: true
     worker_emit_quote: "1"
     min_ready: 1
     scale_up_by: 1
+    delete_after_use: false
     container_stats_scope: all
-    worker_trace_enabled: false
+    worker_trace_enabled: true
     docker_api_timeout_ms: 5000
     docker_ready_timeout_ms: 15000

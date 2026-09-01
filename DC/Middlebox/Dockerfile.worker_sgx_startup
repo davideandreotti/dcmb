@@ -6,20 +6,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-COPY DC/Middlebox/middlebox_sgxgo /app/middlebox_sgxgo
-COPY DC/Middlebox/middlebox_sgxgo_container.manifest.template /app/middlebox_sgxgo.manifest.template
+# This image is intentionally reserved for startup-cost experiments.
+COPY DC/Middlebox/middlebox /app/middlebox
+COPY DC/Middlebox/middlebox_container.manifest.template /app/middlebox.manifest.template
 COPY DC/Middlebox/schemas /app/schemas
 COPY DC/Middlebox/jwks.dat /app/jwks.dat
 COPY certs_external/ /home/bonsai/dcmb/certs_external/
 
-RUN chmod +x /app/middlebox_sgxgo \
+RUN chmod +x /app/middlebox \
     && mkdir -p /trace \
     && gramine-sgx-gen-private-key /app/enclave-key.pem \
-    && gramine-manifest /app/middlebox_sgxgo.manifest.template /app/middlebox_sgxgo.manifest \
+    && gramine-manifest /app/middlebox.manifest.template /app/middlebox.manifest \
     && gramine-sgx-sign \
-        --manifest /app/middlebox_sgxgo.manifest \
+        --manifest /app/middlebox.manifest \
         --key /app/enclave-key.pem \
-        --output /app/middlebox_sgxgo.manifest.sgx
+        --output /app/middlebox.manifest.sgx
 
 ENV OPERATOR_MODE=warm
 ENV OPERATOR_ID=operator_1
@@ -28,4 +29,4 @@ ENV MBX_EMIT_QUOTE=0
 
 STOPSIGNAL SIGTERM
 
-ENTRYPOINT ["gramine-sgx", "middlebox_sgxgo"]
+ENTRYPOINT ["gramine-sgx", "middlebox"]

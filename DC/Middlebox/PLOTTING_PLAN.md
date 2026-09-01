@@ -1,476 +1,165 @@
 # Plotting Plan
 
-Goal: build simple plotting scripts/functions that consume one experiment campaign folder and produce latency, throughput, CPU, and startup plots from converted trace/resource CSVs.
+The final paper artifact inventory is in `PAPER_FIGURES_MEMO.md`. This file
+records the implemented extraction and plotting contract.
 
-Example usage:
+## Usage
 
 ```bash
-python3 benchmarking/plot_latency.py experiments/2026-06-26_11-46-16_latency_1
+python3 benchmarking/plot_latency.py experiments/<campaign-directory>
 ```
 
-Expected outputs:
-
-```text
-<campaign>/plots/
-  e2e_timeseries.pdf
-  e2e_violin.pdf
-  e2e_latency_samples.csv
-  run_summary.csv
-  throughput_offered_achieved.pdf
-  latency_vs_offered.pdf
-  cpu_timeseries.pdf
-  memory_timeseries.pdf
-  cpu_vs_offered.pdf
-  startup_times.pdf
-  worker_startup_distribution.pdf
-  handshake_request_duration.pdf
-```
-
-## Inputs
-
-For every run folder inside the campaign, read:
-
-```text
-metadata.json
-csv/client.csv
-csv/startup.csv
-cpu/processes.csv
-cpu/containers_total.csv
-```
-
-Ignore runs without `csv/client.csv`.
-
-Do not support old resource CSV formats in the next implementation pass. New process resource files should include RSS/VMS/thread fields; Docker aggregate files should use `cpu_perc_sum` from `cpu/containers_total.csv`.
-
-## End-To-End Latency Extraction
-
-Group client trace events by request `id`.
-
-Use these events:
-
-```text
-client_request_start
-client_response_done
-client_request_error
-```
-
-A request is valid when:
-
-- `client_request_start` exists
-- `client_response_done` exists
-- `client_response_done.arg` is a 2xx HTTP status
-- no `client_request_error` exists for that request
-
-Compute:
-
-```text
-latency_ns = client_response_done.timestamp_ns - client_request_start.timestamp_ns
-latency_ms = latency_ns / 1e6
-elapsed_s  = (client_request_start.timestamp_ns - first_request_start_in_run) / 1e9
-```
-
-Failed requests are excluded from latency plots but counted for annotations.
-
-## Steady-State Window
-
-For throughput/latency summary plots, use a steady-state request set:
-
-- ignore request IDs starting with `warmup-`
-- sort remaining requests by `client_request_start`
-- exclude the first remaining real request from steady-state calculations
-- include requests whose request-start timestamp is inside the measurement window
-- use request-start time for the end cutoff, so requests started before the end still count if they finish after it
-- use successful 2xx response events only for achieved-throughput and latency statistics
-
-This cuts both the explicit warmup request and the first measured outlier where delegation retrieval or one-time persistent handshake setup can dominate.
-
-If multiple persistent clients are used, keep the first-pass rule simple: exclude the first request in the run after warmup. If per-client first-request removal becomes necessary, update the helper in one place.
-
-## Persistent Mode
-
-Use `metadata.json`:
-
-```text
-parameters.mode
-parameters.clients
-parameters.rate
-parameters.deployment.name
-parameters.iteration
-```
-
-For persistent mode:
-
-- Keep all valid requests in the raw time-series view unless the plot explicitly says it is steady-state only.
-- For steady-state violin/summary plots, use the same window rule above: cut `warmup-*`, then cut the first real request.
-
-First-pass persistent client identification:
-
-- Request IDs look like `lambrate-1-23`.
-- Remove the final `-<request_number>` suffix.
-- Treat the remaining prefix as the logical persistent client ID.
-
-Example:
-
-```text
-lambrate-1-23 -> lambrate-1
-```
-
-If the ID shape changes later, update this helper only.
-
-## Processed Data
-
-Write one normalized CSV:
+The script always writes normalized data first:
 
 ```text
 plots/e2e_latency_samples.csv
-```
-
-Suggested columns:
-
-```text
-campaign
-run_name
-deployment
-mode
-clients
-rate
-iteration
-request_id
-elapsed_s
-latency_ns
-latency_ms
-status
-in_violin
-```
-
-For failed requests, include a row with `status=failed` and empty latency fields if practical. This keeps failure annotations reproducible.
-
-This CSV may be large if the campaign has many requests, but it is useful for inspection and avoids reparsing raw traces for every plot. If size becomes annoying later, add an option to skip it or write `.csv.gz`.
-
-## Plot 1: Time Series
-
-Output:
-
-```text
-plots/e2e_timeseries.pdf
-```
-
-One subplot per run in the campaign.
-
-Each subplot:
-
-- x-axis: `elapsed_s`
-- y-axis: `latency_ms`
-- linear scale
-- all valid requests plotted as unconnected dot samples
-- dot samples should be light blue
-- overlay a time-window moving average line in dark blue
-- add an average-latency annotation on the right side, vertically aligned with the run's average latency
-- title includes deployment, mode, clients, rate, and run number
-- if failed requests exist, add a red annotation such as `failed: 3`
-- keep the failure annotation as a tiny obvious code block that can be manually commented out; do not add a dedicated CLI flag for it
-
-## Plot 2: Violin
-
-Output:
-
-```text
-plots/e2e_violin.pdf
-```
-
-Pool repeated runs for now.
-
-Group by:
-
-```text
-deployment + mode
-```
-
-Example labels:
-
-```text
-baremetal
-fresh
-
-baremetal
-persistent
-
-docker_gateway
-fresh
-
-docker_gateway
-persistent
-```
-
-Rules:
-
-- use only valid requests
-- exclude `warmup-*`
-- exclude the first real request after warmup
-- use a linear y-axis
-- remove the black violin body border
-- print average latency for each violin
-- place the average text to the right of the corresponding violin, vertically aligned with the average marker/line
-- support an optional percentile clip for violin samples only, e.g. `percentile_clip = 99`; keep it as an easy-to-edit local variable and make it clear in the title if enabled
-- add a red failure annotation per group if failures exist
-
-## Script Shape
-
-Keep the plotting script easy to edit manually. Prefer simple functions over deep abstractions:
-
-- Do not grow a large CLI for every visual detail.
-- Keep editable plotting knobs close to the specific plot function, or in `main()` when they describe output paths.
-- Do not force one global plotting configuration for every figure; time-series and violin plots may need different titles, labels, colors, sizes, y-limits, and annotation behavior.
-- Keep the data extraction functions separate from plotting functions so later latency-breakdown plots can reuse the processed samples.
-
-```python
-def load_campaign(campaign_dir): ...
-def load_run(run_dir): ...
-def extract_client_latencies(client_csv, metadata): ...
-def write_samples_csv(samples, path): ...
-
-def plot_timeseries(samples, run_summaries, output_path):
-    figure_size = (12, 8)
-    y_label = "End-to-end latency (ms)"
-    dot_color = "#8ecae6"
-    moving_average_color = "#023047"
-    moving_average_window_s = 1.0
-    show_failure_annotations = True  # comment out locally if not desired
-    ...
-
-def plot_violin(samples, run_summaries, output_path):
-    figure_size = (8, 5)
-    y_label = "End-to-end latency (ms)"
-    percentile_clip = None  # set to 99 to clip each violin at p99
-    show_failure_annotations = True  # comment out locally if not desired
-    ...
-
-def main():
-    timeseries_filename = "e2e_timeseries.pdf"
-    violin_filename = "e2e_violin.pdf"
-    samples_filename = "e2e_latency_samples.csv"
-    ...
-```
-
-Use:
-
-```text
-Python stdlib csv/json
-matplotlib
-```
-
-Pandas is not required for the first version. Avoid seaborn unless it is clearly useful and already installed. Matplotlib's `violinplot` is enough for the first version.
-
-## CLI
-
-Initial CLI:
-
-```bash
-python3 benchmarking/plot_latency.py <campaign_dir>
-```
-
-Useful options:
-
-```text
---out-dir <campaign_dir>/plots
-```
-
-Avoid adding flags for style details unless they are truly needed for automation.
-
-## Next Plotting Pass
-
-The next implementation pass should keep the current latency plots and add the following simple, editable functions.
-
-### Processed Summary
-
-Write a small run-level summary:
-
-```text
 plots/run_summary.csv
 ```
 
-One row per run:
+It then emits only figures/tables for which the campaign contains the required
+matrix. Paper-numbered outputs use complete-matrix guards so smoke and startup
+campaigns cannot create plausible-looking partial paper figures.
+
+## Implemented Paper Outputs
 
 ```text
-campaign
-run_name
-deployment
-mode
-clients
-offered_rps
-achieved_rps
-success
-failed
-p99_latency_ms
-mean_cpu_percent
-peak_cpu_percent
-startup_process_ready_ms
-startup_first_worker_ready_ms
+P1-P2-latency-dissection.pdf
+P1-handshake-latency-dissection.pdf
+P2-request-latency-dissection.pdf
+P3a-handshake-latency-distribution-linear.pdf
+P3a-handshake-latency-distribution-log.pdf
+P3b-persistent-request-latency-distribution.pdf
+P4-instance-startup-time.pdf
+P5-single-client-throughput-latency-cpu.pdf
+P5a-single-client-throughput-latency.pdf
+P5b-single-client-throughput-cpu.pdf
+P5-single-client-capacity.tex
+P7-client-scalability.pdf
+P7a-client-scalability-throughput.pdf
+P7b-client-scalability-latency.pdf
+T1-selected-load-resources.tex
+T2-clients-memory.tex
+T3-component-costs.tex
+T4-handshake-capacity.tex
+handshake-capacity-summary.csv
 ```
 
-This table should be small. Do not duplicate all packet samples into it. Keep packet-level data in `e2e_latency_samples.csv` and raw trace CSVs.
+P6 is represented by T4 rather than a primary plot. Its detailed curves are
+analytical artifacts.
 
-### Latency Time Series With Drops
+Obsolete overlapping plots have been removed: generic end-to-end violin,
+worker-startup distribution, handshake/request duration bars, DC-reuse bars,
+and handler-cost bars.
 
-Extend the existing `e2e_timeseries.pdf`:
+## Extraction Rules
 
-- successful requests remain light-blue dots
-- moving average remains dark blue
-- failed/dropped requests are shown as small red ticks at the top edge of the subplot
-- y-axis starts at zero
-
-The red ticks should be a small obvious code block in the plotting function, easy to comment out manually.
-
-### Offered vs Achieved Throughput
-
-Output:
+Client trace events are grouped by trace ID. A successful sample requires:
 
 ```text
-plots/throughput_offered_achieved.pdf
+client_request_start
+client_response_done with a 2xx status
+no client_request_error
 ```
 
-Rules:
-
-- x-axis: offered requests/sec from metadata/client config
-- y-axis: achieved requests/sec
-- achieved throughput counts successful 2xx response events only
-- use the steady-state window rule above
-- group lines by deployment and mode
-
-### Offered Throughput vs End-To-End Latency
-
-Output:
+Durations:
 
 ```text
-plots/latency_vs_offered.pdf
+end-to-end = client_response_done - client_request_start
+handshake  = client_tls_done - client_request_start
+request    = client_response_done - client_request_sent
 ```
 
-Rules:
+Priming IDs beginning with `warmup-` are excluded. The steady-state extractor
+sorts remaining requests by start timestamp and skips the first 10 real
+requests. Requests starting within the configured measurement window remain in
+the sample even if their response completes just after the window.
 
-- x-axis: offered requests/sec
-- y-axis: p99 end-to-end latency in ms
-- use successful requests only
-- use the steady-state window rule above
-- group by deployment and mode
+Persistent and resumption trace IDs retain the logical client identity.
+Resumption capacity counts only handshakes explicitly marked
+`client_tls_resumed`; full-handshake fallbacks are invalid quality points.
 
-### CPU Time Series
+Connection and delegation binding events correlate client, gateway, worker,
+certserver, and Go application-server traces for latency dissection. Component
+deltas across different machines require synchronized clocks.
 
-Output:
+The request dissection uses repeated path-level components rather than a
+generic remainder: client-middlebox segments share one color, middlebox-server
+segments share one color, and request/response validation share one legend
+item. The final response path absorbs reverse-proxy streaming and tiny
+uninstrumented callback-boundary gaps because no complete-upstream-body event
+exists.
+
+## Statistical Rules
+
+- Requests are samples within a run; independent runs are the statistical
+  units for means and confidence intervals.
+- Error bars are two-sided Student-t 95% confidence intervals and appear only
+  with multiple runs.
+- Final latency plots use arithmetic run means.
+- Violin bodies are clipped at per-group p95, but displayed means are computed
+  from unfiltered successful samples.
+- The logarithmic handshake violin estimates density in log10 latency space.
+- Failed/partial runs do not enter aggregate means or capacity estimates.
+
+## Point Quality
+
+One classifier supplies every aggregate plot and table. Invalid conditions
+include controller/client failure, request errors/timeouts, non-2xx responses,
+gateway drops, resumption fallback, partial client participation, and material
+scheduled/achieved deficits. Warnings include boundary-slot deficits, late
+slots, and in-flight saturation without an otherwise-invalid outcome.
+
+Plot symbols:
 
 ```text
-plots/cpu_timeseries.pdf
+red X       invalid point
+amber ^     warning point
 ```
 
-Rules:
+Every symbol is also explained in terminal output. Invalid points remain
+visible but do not connect to healthy curves.
 
-- baremetal/SGX: use `cpu/processes.csv`
-- direct: skip from middlebox CPU plots
-- Docker: use `cpu/containers_total.csv`
-- process CPU percent is computed from deltas of `user_time_s + system_time_s` over wall-clock sample deltas
-- for Gramine/wrapper-style deployments, use process-tree CPU/memory where available
-- Docker CPU uses `cpu_perc_sum`
-- CPU percent may exceed 100% on multi-core workloads
+## Resource Rules
 
-For process deployments, identify the middlebox process by excluding `server`, `certserver`, and `client` roles rather than relying on old role names.
+- Baremetal/SGX: process-tree CPU time from `cpu/processes.csv`.
+- Baremetal memory: process-tree RSS. Shared SGX memory:
+  `go_retained_bytes` from `cpu/middlebox_memory.csv`, with no RSS fallback.
+- Docker: gateway plus all current worker cgroups from
+  `cpu/containers_total.csv`.
+- CPU may exceed 100%, meaning more than one logical core.
+- Memory is RSS/cgroup memory, not VMS and not SGX EPC consumption.
+- Direct is excluded from middlebox CPU/memory outputs.
 
-### Memory Time Series
+T2 uses full-handler persistent runs at 10 requests/s and client counts 1, 10,
+30, and 50. It reports a p99-filtered sample mean for CPU and p99 memory. A
+later refinement should replace the sampled CPU mean with CPU time integrated
+over the complete steady-state window.
 
-Output:
+Docker uses the cgroup-v2 collector locally. Rootful Podman currently lacks the
+same cgroup-v2 setup and uses the persistent Podman stats stream with a
+no-stream fallback. Verify `metadata.json` reports `podman_stats_stream` before
+final Podman measurements.
 
-```text
-plots/memory_timeseries.pdf
-```
+## Figure-Specific Data
 
-Rules:
+- P1/P2 and T3 operation rows: `configs_latency_dissection.yml`.
+- P3, P5, T1: `configs.yml`.
+- P4 and T3 worker/startup rows: `configs_startup.yml`; the focused SGX-Go
+  process-startup point uses `configs_startup_sgxgo.yml`.
+- P7 and T2: `configs_clients_scalability.yml`.
+- T4 and handshake analytical curves: `configs_handshake_capacity.yml`.
 
-- baremetal/SGX: use `cpu/processes.csv`
-- direct: skip from middlebox memory plots
-- Docker: use `cpu/containers_total.csv`
-- process deployments use `rss_tree_bytes` when available, falling back to `rss_bytes`
-- Docker uses `mem_usage_bytes_sum`
-- y-axis should be in MiB
-- keep this as a diagnostic time-series plot; do not overinterpret Go RSS/VMS as exact live heap usage
+Plot styling remains local to each function rather than exposed through a large
+CLI. Titles, colors, labels, filenames, percentile clipping, and optional
+annotations are intentionally straightforward to edit in code for the final
+paper pass.
 
-### Offered Throughput vs CPU
+## Remaining Work
 
-Output:
-
-```text
-plots/cpu_vs_offered.pdf
-```
-
-Rules:
-
-- x-axis: offered requests/sec
-- y-axis: mean CPU percent over the steady-state window
-- skip direct
-- Docker uses whole gateway/worker machinery from `containers_total.csv`
-- baremetal/SGX use the middlebox process tree where available
-
-### Startup Time
-
-Output:
-
-```text
-plots/startup_times.pdf
-```
-
-Input:
-
-```text
-csv/startup.csv
-```
-
-Rules:
-
-- bar plot by deployment strategy
-- repeated runs should show mean plus confidence interval, and ideally individual points if run count is small
-- baremetal/SGX: process start to `[OPERATOR_READY]`
-- Docker: plot both gateway ready and gateway plus first worker ready
-- direct has no middlebox startup and should be skipped
-
-### Worker Startup Distribution
-
-Output:
-
-```text
-plots/worker_startup_distribution.pdf
-```
-
-Input:
-
-```text
-csv/startup.csv
-```
-
-Rules:
-
-- Docker only
-- use `worker_ready_internal` rows
-- violin or boxplot of per-worker `startup_ms`
-
-### Handshake vs Request Duration
-
-Output:
-
-```text
-plots/handshake_request_duration.pdf
-```
-
-Rules:
-
-- separate panels or separate figures for fresh and persistent modes
-- group by deployment strategy
-- use two adjacent bars per deployment: handshake duration and request duration
-- do not stack the bars in the first implementation
-- keep deeper breakdowns such as delegation, attestation, validation, and upstream request for a later plotting pass
-
-## Gitignore
-
-Add a gitignore rule for generated plot folders:
-
-```gitignore
-DC/Middlebox/experiments/*/plots/
-```
-
-If the normalized samples CSV lives under `plots/`, it will be ignored together with generated PDFs. That is acceptable because it is generated data.
+- Run final repeated campaigns and select between the linear/log P3a versions.
+- Replace the sampled mean CPU statistic with duration-integrated CPU time over
+  the steady-state window for the final resource accounting pass.
+- Add a TLMSP trace adapter/strategy to P1/P3 if that comparison is retained.
+- Validate Podman resource collection on Bovisa.
+- Implement remote orchestration and clock-synchronization checks before using
+  cross-machine component deltas.

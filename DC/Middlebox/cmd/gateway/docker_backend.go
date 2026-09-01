@@ -53,18 +53,21 @@ type dockerBackend struct {
 	operatorTarget              string
 	operatorCertURL             string
 	operatorCA                  string
+	operatorLogLevel            string
 	operatorReuseDC             string
 	operatorExitAfterRequest    string
 	operatorConsumeAfterRequest string
 	workerTraceEnabled          bool
 	workerTraceHostDir          string
 	workerTraceContainerDir     string
+	workerTraceBufferEvents     int
+	workerTraceDropOnFull       bool
 	workerSGXEnabled            bool
 	workerSGXEnclaveDevice      string
 	workerSGXProvisionDevice    string
 	workerAESMDir               string
 	workerEmitQuote             string
-	workerSIGINTTimeout         time.Duration
+	workerSignalTimeout         time.Duration
 
 	minReady       int
 	scaleUpBy      int
@@ -76,14 +79,15 @@ type dockerBackend struct {
 	readyDialTimeout time.Duration
 	refillPeriod     time.Duration
 
-	mu       sync.Mutex
-	workers  map[string]*dockerWorker
-	ready    []string
-	leased   map[string]struct{}
-	bound    map[string]struct{}
-	creating int
-	counter  atomic.Int64
-	createWG sync.WaitGroup
+	mu        sync.Mutex
+	workers   map[string]*dockerWorker
+	ready     []string
+	leased    map[string]struct{}
+	bound     map[string]struct{}
+	creating  int
+	counter   atomic.Int64
+	createWG  sync.WaitGroup
+	poolReady sync.Once
 
 	shuttingDown bool
 
@@ -200,18 +204,21 @@ func newDockerBackendFromEnv() (*dockerBackend, error) {
 		operatorTarget:              strings.TrimSpace(getEnv("DOCKER_WORKER_OPERATOR_TARGET", os.Getenv("OPERATOR_TARGET"))),
 		operatorCertURL:             strings.TrimSpace(getEnv("DOCKER_WORKER_OPERATOR_CERT_URL", os.Getenv("OPERATOR_CERT_URL"))),
 		operatorCA:                  strings.TrimSpace(getEnv("DOCKER_WORKER_CA", os.Getenv("OPERATOR_CA"))),
+		operatorLogLevel:            getEnv("DOCKER_WORKER_LOG_LEVEL", "error"),
 		operatorReuseDC:             getEnv("DOCKER_WORKER_REUSE_DC", getEnv("OPERATOR_REUSE_DC", "true")),
 		operatorExitAfterRequest:    getEnv("DOCKER_WORKER_EXIT_AFTER_REQUEST", getEnv("OPERATOR_EXIT_AFTER_REQUEST", "false")),
 		operatorConsumeAfterRequest: getEnv("DOCKER_WORKER_CONSUME_AFTER_REQUEST", getEnv("OPERATOR_CONSUME_AFTER_REQUEST", "false")),
 		workerTraceEnabled:          getEnvBool("DOCKER_WORKER_TRACE_ENABLED", false),
 		workerTraceHostDir:          strings.TrimSpace(getEnv("DOCKER_WORKER_TRACE_HOST_DIR", "/tmp/dcmb-traces")),
 		workerTraceContainerDir:     strings.TrimSpace(getEnv("DOCKER_WORKER_TRACE_CONTAINER_DIR", "/trace")),
+		workerTraceBufferEvents:     getEnvInt("DOCKER_WORKER_TRACE_BUFFER_EVENTS", 100000),
+		workerTraceDropOnFull:       getEnvBool("DOCKER_WORKER_TRACE_DROP_ON_FULL", true),
 		workerSGXEnabled:            getEnvBool("DOCKER_WORKER_SGX_ENABLED", false),
 		workerSGXEnclaveDevice:      strings.TrimSpace(getEnv("DOCKER_WORKER_SGX_ENCLAVE_DEVICE", "/dev/sgx_enclave")),
 		workerSGXProvisionDevice:    strings.TrimSpace(getEnv("DOCKER_WORKER_SGX_PROVISION_DEVICE", "/dev/sgx_provision")),
 		workerAESMDir:               strings.TrimSpace(getEnv("DOCKER_WORKER_AESM_DIR", "/var/run/aesmd")),
 		workerEmitQuote:             strings.TrimSpace(os.Getenv("DOCKER_WORKER_EMIT_QUOTE")),
-		workerSIGINTTimeout:         envDurationMs("DOCKER_WORKER_SIGINT_TIMEOUT_MS", 250),
+		workerSignalTimeout:         envDurationMs("DOCKER_WORKER_SIGNAL_TIMEOUT_MS", getEnvInt("DOCKER_WORKER_SIGINT_TIMEOUT_MS", 3000)),
 
 		minReady:       minReady,
 		scaleUpBy:      scaleUpBy,
@@ -434,6 +441,7 @@ func (d *dockerBackend) createReadyWorker() {
 	worker, err := d.createAndWaitReady()
 
 	var removeAfterCreate bool
+	readyCount := 0
 	d.mu.Lock()
 	d.creating--
 	if err == nil {
@@ -442,17 +450,23 @@ func (d *dockerBackend) createReadyWorker() {
 		} else {
 			d.workers[worker.name] = worker
 			d.ready = append(d.ready, worker.name)
+			readyCount = len(d.ready)
 		}
 	}
 	d.mu.Unlock()
 
 	if err != nil {
-		info("[GATEWAY] docker worker create failed: " + err.Error())
+		gatewayErrorf("docker worker create failed: %v", err)
 	} else if removeAfterCreate {
 		info(fmt.Sprintf("[GATEWAY] docker worker created during shutdown name=%s ip=%s startup_ms=%d", worker.name, worker.ip, time.Since(start).Milliseconds()))
 		go d.removeWorker(worker, true)
 	} else {
-		info(fmt.Sprintf("[GATEWAY] docker worker ready name=%s ip=%s startup_ms=%d", worker.name, worker.ip, time.Since(start).Milliseconds()))
+		fmt.Fprintf(os.Stderr, "[GATEWAY] docker worker ready name=%s ip=%s startup_ms=%d\n", worker.name, worker.ip, time.Since(start).Milliseconds())
+		if d.minReady > 0 && readyCount >= d.minReady {
+			d.poolReady.Do(func() {
+				fmt.Fprintf(os.Stderr, "[GATEWAY_POOL_READY] ready=%d target=%d\n", readyCount, d.minReady)
+			})
+		}
 	}
 
 	d.triggerRefill()
@@ -469,6 +483,7 @@ func (d *dockerBackend) createAndWaitReady() (*dockerWorker, error) {
 		"-operator_id", name,
 		"-operator_mode", d.operatorMode,
 		"-operator_default_sni", d.operatorDefaultSNI,
+		"-log_level", d.operatorLogLevel,
 		"-reuse_dc=" + d.operatorReuseDC,
 		"-exit_after_request=" + d.operatorExitAfterRequest,
 		"-consume_after_request=" + d.operatorConsumeAfterRequest,
@@ -477,7 +492,12 @@ func (d *dockerBackend) createAndWaitReady() (*dockerWorker, error) {
 		cmd = append(cmd, "-ca", d.operatorCA)
 	}
 	if d.workerTraceEnabled && d.workerTraceContainerDir != "" {
-		cmd = append(cmd, "-trace", path.Join(d.workerTraceContainerDir, name+".bin"))
+		cmd = append(
+			cmd,
+			"-trace", path.Join(d.workerTraceContainerDir, name+".bin"),
+			"-trace-buffer-events", strconv.Itoa(d.workerTraceBufferEvents),
+			fmt.Sprintf("-trace-drop-on-full=%t", d.workerTraceDropOnFull),
+		)
 	}
 
 	req := dockerContainerCreateRequest{
@@ -798,7 +818,7 @@ func (d *dockerBackend) shutdown(ctx context.Context) {
 
 	ids, err := d.listRunContainerIDs(ctx)
 	if err != nil {
-		info("[GATEWAY] docker cleanup list failed: " + err.Error())
+		gatewayErrorf("docker cleanup list failed: %v", err)
 		return
 	}
 	for _, id := range ids {
@@ -849,12 +869,12 @@ func (d *dockerBackend) removeContainerIDContext(ctx context.Context, containerI
 	benchtrace.Mark(benchtrace.GatewayContainerRemove, containerID, 0)
 	forceRemove := false
 	if d.workerSGXEnabled {
-		forceRemove = !d.interruptContainerContext(ctx, containerID, reason)
+		forceRemove = !d.terminateContainerContext(ctx, containerID, reason)
 	} else {
 		stopPath := "/containers/" + containerID + "/stop?t=1"
 		stopErr := d.api.do(ctx, http.MethodPost, stopPath, nil, nil)
 		if stopErr != nil && !errors.Is(stopErr, errDockerNotFound) && !isDockerAPIStatus(stopErr, http.StatusNotModified) {
-			info("[GATEWAY] docker graceful stop failed reason=" + reason + " id=" + containerID + " err=" + stopErr.Error())
+			gatewayErrorf("docker graceful stop failed reason=%s id=%s err=%v", reason, containerID, stopErr)
 		}
 	}
 
@@ -864,41 +884,41 @@ func (d *dockerBackend) removeContainerIDContext(ctx context.Context, containerI
 	}
 	err := d.api.do(ctx, http.MethodDelete, removePath, nil, nil)
 	if err != nil && !errors.Is(err, errDockerNotFound) && !forceRemove {
-		info("[GATEWAY] docker graceful remove failed reason=" + reason + " id=" + containerID + " err=" + err.Error())
+		gatewayErrorf("docker graceful remove failed reason=%s id=%s err=%v", reason, containerID, err)
 		err = d.api.do(ctx, http.MethodDelete, "/containers/"+containerID+"?force=true&v=true", nil, nil)
 	}
 	info("[GATEWAY] docker remove container id=" + containerID + " reason=" + reason)
 	if err != nil && !errors.Is(err, errDockerNotFound) {
 		benchtrace.Mark(benchtrace.GatewayContainerRemoved, containerID, 1)
-		info("[GATEWAY] docker remove failed reason=" + reason + " id=" + containerID + " err=" + err.Error())
+		gatewayErrorf("docker remove failed reason=%s id=%s err=%v", reason, containerID, err)
 		return
 	}
 	benchtrace.Mark(benchtrace.GatewayContainerRemoved, containerID, 0)
 }
 
-func (d *dockerBackend) interruptContainerContext(ctx context.Context, containerID string, reason string) bool {
-	killPath := "/containers/" + containerID + "/kill?signal=SIGINT"
+func (d *dockerBackend) terminateContainerContext(ctx context.Context, containerID string, reason string) bool {
+	killPath := "/containers/" + containerID + "/kill?signal=SIGTERM"
 	err := d.api.do(ctx, http.MethodPost, killPath, nil, nil)
 	if errors.Is(err, errDockerNotFound) || isDockerAPIStatus(err, http.StatusNotModified) {
 		return true
 	}
 	if err != nil && !errors.Is(err, errDockerNotFound) && !isDockerAPIStatus(err, http.StatusNotModified) {
-		info("[GATEWAY] docker sigint failed reason=" + reason + " id=" + containerID + " err=" + err.Error())
+		gatewayErrorf("docker sigterm failed reason=%s id=%s err=%v", reason, containerID, err)
 		return false
 	}
 
-	deadline := time.Now().Add(d.workerSIGINTTimeout)
+	deadline := time.Now().Add(d.workerSignalTimeout)
 	for time.Now().Before(deadline) {
 		running, statusErr := d.containerRunning(containerID)
 		if errors.Is(statusErr, errDockerNotFound) || (statusErr == nil && !running) {
 			return true
 		}
 		if statusErr != nil {
-			info("[GATEWAY] docker sigint status check failed reason=" + reason + " id=" + containerID + " err=" + statusErr.Error())
+			gatewayErrorf("docker sigterm status check failed reason=%s id=%s err=%v", reason, containerID, statusErr)
 			return false
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	info("[GATEWAY] docker sigint timeout reason=" + reason + " id=" + containerID + " timeout=" + d.workerSIGINTTimeout.String())
+	gatewayErrorf("docker sigterm timeout reason=%s id=%s timeout=%s", reason, containerID, d.workerSignalTimeout)
 	return false
 }
