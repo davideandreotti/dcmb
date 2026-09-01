@@ -1459,6 +1459,8 @@ class Controller:
             str(self.duration_s),
             "-rate",
             f"{rate:g}",
+            "-pacing",
+            str(self.client_cfg.get("pacing", "spin")),
             "-servername",
             str(self.client_cfg.get("servername", "server")),
             "-trace",

@@ -56,15 +56,20 @@ P3a-handshake-latency-distribution-log.pdf
 P3b-persistent-request-latency-distribution.pdf
 ```
 
-The handshake figure includes fresh full handshakes and Docker/Docker + SGX
+The handshake figure includes fresh full handshakes and Container/Container+SGX
 resumption. Both linear and logarithmic-density versions are emitted because
 full SGX-container handshakes are much slower than the remaining groups. The
-request figure uses persistent mode at 10 requests/s.
+request figure uses persistent mode at 10 requests/s. Paper labels are Direct,
+Shared, Shared SGX, Container, and Container+SGX; resumption is placed on a
+second label line.
 
-Violin bodies are clipped independently at p95 for readability. The displayed
-point is the unfiltered arithmetic run mean; a Student-t 95% confidence interval
-is shown only when multiple runs exist. Median, IQR, and p99 ornaments are not
-drawn. The complete five-strategy matrix is required.
+After the experiment's normal steady-state and success selection, each violin
+removes only extreme upper outliers above `Q3 + 3 * IQR`. The plotting command
+prints the resulting threshold and removed count for every group. Short,
+unlabelled black bars mark p50, p95, and p99 of the retained samples. The
+displayed point is the arithmetic run mean after the same filtering; a
+Student-t 95% confidence interval is shown only when multiple runs exist. The
+complete five-strategy matrix is required.
 
 Data source: `configs.yml`.
 
@@ -99,18 +104,23 @@ Output:
 
 ```text
 P5-single-client-throughput-latency-cpu.pdf
+P5a-single-client-throughput-latency.pdf
+P5b-single-client-throughput-cpu.pdf
 ```
 
 Two panels over offered request throughput on a logarithmic x-axis:
 
-- unfiltered mean end-to-end latency;
+- mean end-to-end latency after discarding samples above each run's p99;
 - mean total middlebox CPU percentage.
 
 Only one-client persistent runs and canonical full strategies are included.
-Direct is omitted from the middlebox CPU panel. Invalid points remain visible
-as red crosses, warnings as amber triangles, and neither contributes to the
-healthy line or capacity estimate. Means and confidence intervals use runs as
-the statistical unit.
+Direct is omitted from the middlebox CPU panel. The combined figure retains its
+title; P5a and P5b are title-free single-panel versions with independent
+legends. Invalid points remain connected by the observed strategy line and are
+overlaid with red crosses; warnings use amber triangles. Invalid points still
+do not contribute to the capacity estimate. Means and confidence intervals use
+runs as the statistical unit. Paper labels are Direct, Shared, Shared SGX,
+Container, and Container+SGX.
 
 Supporting table:
 
@@ -140,7 +150,16 @@ Two panels for Baremetal, SGX, Docker, and Docker + SGX:
 - closed-loop maximum throughput at saturation versus persistent clients;
 - mean open-loop latency at a fixed aggregate 10 requests/s versus clients.
 
-Client counts are `1, 5, 10, 50` with ordinary x-axis labels. The figure is not
+The plot labels these deployment strategies as Shared, Shared SGX, Container,
+and Container+SGX. Both x-axes are linear. In addition to the combined figure,
+the script writes title-free single-panel versions:
+
+```text
+P7a-client-scalability-throughput.pdf
+P7b-client-scalability-latency.pdf
+```
+
+Client counts are `1, 5, 10, 20, 30, 40, 50` with ordinary x-axis labels. The figure is not
 generated from single-client or partial-strategy campaigns.
 
 Data source: `configs_clients_scalability.yml`.
@@ -158,17 +177,24 @@ rates 10 and 100 requests/s. Direct is `N/A` because it has no middlebox.
 
 Output: `T2-clients-memory.tex`.
 
-Reports median/peak total memory and memory per client at aggregate 10
-requests/s for the scalability client counts. Native/SGX use process-tree RSS;
-containers use aggregate gateway plus worker cgroup memory.
+Reports two rows per full-handler deployment at aggregate 10 requests/s with
+persistent clients 1, 10, 30, and 50. CPU is the mean after excluding samples
+above each run's p99; memory is the per-run p99. Shared uses process-tree RSS,
+Shared SGX uses only the in-enclave `go_retained_bytes` sampler, and container
+strategies use aggregate gateway-plus-worker cgroup memory. Repeated runs are
+reported as the mean with a 95% confidence interval.
 
 ### T3. Component Costs
 
 Output: `T3-component-costs.tex`.
 
-Reports delegation retrieval, quote generation/verification, DC generation,
-validation/response processing, and worker startup components from the
-controlled dissection traces.
+Reports fixed, ordered rows for request/response validation on Shared and
+Shared SGX, quote generation/verification and DC generation on Shared SGX,
+baseline and SGX-Go container-worker creation, and standard-Go/SGX-Go SGX
+process startup. Each run contributes one mean; repeated runs are reported as
+the mean with a 95% confidence interval. Missing measurements remain `--`.
+The SGX startup interval is controller process launch to `[OPERATOR_READY]`, not
+a pure enclave-loader microbenchmark.
 
 ### T4. Handshake Capacity
 

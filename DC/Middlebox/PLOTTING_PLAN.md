@@ -31,8 +31,12 @@ P3a-handshake-latency-distribution-log.pdf
 P3b-persistent-request-latency-distribution.pdf
 P4-instance-startup-time.pdf
 P5-single-client-throughput-latency-cpu.pdf
+P5a-single-client-throughput-latency.pdf
+P5b-single-client-throughput-cpu.pdf
 P5-single-client-capacity.tex
 P7-client-scalability.pdf
+P7a-client-scalability-throughput.pdf
+P7b-client-scalability-latency.pdf
 T1-selected-load-resources.tex
 T2-clients-memory.tex
 T3-component-costs.tex
@@ -117,12 +121,19 @@ visible but do not connect to healthy curves.
 
 ## Resource Rules
 
-- Baremetal/SGX: process-tree CPU time and RSS from `cpu/processes.csv`.
+- Baremetal/SGX: process-tree CPU time from `cpu/processes.csv`.
+- Baremetal memory: process-tree RSS. Shared SGX memory:
+  `go_retained_bytes` from `cpu/middlebox_memory.csv`, with no RSS fallback.
 - Docker: gateway plus all current worker cgroups from
   `cpu/containers_total.csv`.
 - CPU may exceed 100%, meaning more than one logical core.
 - Memory is RSS/cgroup memory, not VMS and not SGX EPC consumption.
 - Direct is excluded from middlebox CPU/memory outputs.
+
+T2 uses full-handler persistent runs at 10 requests/s and client counts 1, 10,
+30, and 50. It reports a p99-filtered sample mean for CPU and p99 memory. A
+later refinement should replace the sampled CPU mean with CPU time integrated
+over the complete steady-state window.
 
 Docker uses the cgroup-v2 collector locally. Rootful Podman currently lacks the
 same cgroup-v2 setup and uses the persistent Podman stats stream with a
@@ -131,9 +142,10 @@ final Podman measurements.
 
 ## Figure-Specific Data
 
-- P1/P2 and T3: `configs_latency_dissection.yml`.
+- P1/P2 and T3 operation rows: `configs_latency_dissection.yml`.
 - P3, P5, T1: `configs.yml`.
-- P4: `configs_startup.yml`.
+- P4 and T3 worker/startup rows: `configs_startup.yml`; the focused SGX-Go
+  process-startup point uses `configs_startup_sgxgo.yml`.
 - P7 and T2: `configs_clients_scalability.yml`.
 - T4 and handshake analytical curves: `configs_handshake_capacity.yml`.
 
@@ -145,6 +157,8 @@ paper pass.
 ## Remaining Work
 
 - Run final repeated campaigns and select between the linear/log P3a versions.
+- Replace the sampled mean CPU statistic with duration-integrated CPU time over
+  the steady-state window for the final resource accounting pass.
 - Add a TLMSP trace adapter/strategy to P1/P3 if that comparison is retained.
 - Validate Podman resource collection on Bovisa.
 - Implement remote orchestration and clock-synchronization checks before using

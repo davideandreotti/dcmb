@@ -37,6 +37,7 @@ server:
 
 client:
   binary: ./client
+  pacing: timer
   method: POST
   servername: server
   data:
@@ -49,23 +50,15 @@ client:
 
 client_matrix:
   modes: [persistent]
-  # P7 compares maximum saturated throughput with latency at a controlled
-  # aggregate load. Explicit points avoid an unnecessary rates x clients sweep.
+  # Missing relaxed-load points shared by every deployment.
   points:
-    # - {clients: 1, rate: 0}
-    # - {clients: 1, rate: 10}
-    # - {clients: 5, rate: 0}
-    # - {clients: 5, rate: 10}
-    # - {clients: 10, rate: 0}
-    # - {clients: 10, rate: 10}
-    # - {clients: 50, rate: 0}
-    # - {clients: 50, rate: 10}
-    - {clients: 20, rate: 0}
+    - {clients: 1, rate: 10}
+    - {clients: 5, rate: 10}
+    - {clients: 10, rate: 10}
     - {clients: 20, rate: 10}
-    - {clients: 30, rate: 0}
     - {clients: 30, rate: 10}
-    - {clients: 40, rate: 0}
     - {clients: 40, rate: 10}
+    - {clients: 50, rate: 10}
 
 # NOTE: on the rootful Podman host, verify that the streaming stats collector
 # reports source=podman_stats_stream in metadata.json; it falls back to
@@ -81,6 +74,18 @@ deployments:
     command: ["gramine-sgx", "middlebox", "-log_level", "error", "-reuse_dc=true"]
     env:
       MBX_EMIT_QUOTE: "1"
+    # Deployment-specific override: recover the failed high-concurrency
+    # closed-loop points in addition to the common 10 requests/s sweep.
+    points:
+      - {clients: 1, rate: 10}
+      - {clients: 5, rate: 10}
+      - {clients: 10, rate: 10}
+      - {clients: 20, rate: 10}
+      - {clients: 30, rate: 10}
+      - {clients: 40, rate: 10}
+      - {clients: 50, rate: 10}
+      # - {clients: 40, rate: 0}
+      # - {clients: 50, rate: 0}
 
   - name: docker_full_reuse
     kind: docker_gateway

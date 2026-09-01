@@ -48,3 +48,7 @@ deployments:
     min_ready: 1
     scale_up_by: 1
     worker_trace_enabled: false
+
+  - name: startup_sgxgo
+    kind: gramine_sgx
+    command: ["gramine-sgx", "middlebox_sgxgo", "-log_level", "error"]

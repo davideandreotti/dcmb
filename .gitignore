@@ -85,3 +85,4 @@ DC/Middlebox/*.manifest.sgx
 DC/Middlebox/*.sig
 DC/Middlebox/middlebox_sgxgo_emptyhandler
 DC/Middlebox/.venv*/
+DC/Middlebox/appserver

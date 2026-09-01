@@ -135,6 +135,11 @@ among logical clients. Client start offsets are distributed over one global
 inter-arrival interval. A client that cannot meet its next serial slot skips
 late slots rather than issuing a catch-up burst. Consequently, achieved rate
 can fall below offered rate without building an unbounded client-side queue.
+The timed run has one shared deadline context. Persistent/resumption clients
+each reuse one pacing timer; fresh mode reuses one timer in its central
+dispatcher while retaining one goroutine per request and the `max-in-flight`
+bound. All pacing uses absolute deadlines, and the context stops only future
+scheduling rather than cancelling requests already in flight.
 
 ### Warmup And Measurement Start
 
@@ -191,16 +196,23 @@ warmup. Summary resource statistics start no earlier than both:
 - the trace-derived steady-state start; and
 - two seconds after the first resource sample.
 
-Baremetal/SGX CPU is calculated from process-tree user+system CPU-time deltas
-divided by wall-time deltas. Baremetal/SGX memory is process-tree RSS. Docker
-uses aggregate gateway-plus-worker cgroup CPU and memory; the CSV retains the
-field names `cpu_perc_sum` and `mem_usage_bytes_sum`. CPU 100% means one fully
-occupied logical CPU and totals may exceed 100%.
+Shared/Shared-SGX CPU is calculated from process-tree user+system CPU-time
+deltas divided by wall-time deltas. Shared memory is process-tree RSS. Shared
+SGX memory uses the in-enclave Go sampler's `go_retained_bytes` and has no RSS
+fallback. Container strategies use aggregate gateway-plus-worker cgroup CPU
+and memory; the CSV retains the field names `cpu_perc_sum` and
+`mem_usage_bytes_sum`. CPU 100% means one fully occupied logical CPU and totals
+may exceed 100%.
+
+The client-scalability resource table uses full-handler persistent runs at 10
+requests/s. It reports the CPU sample mean after excluding values above each
+run's p99 and reports p99 memory. Duration-integrated CPU utilization remains a
+planned final accounting refinement.
 
 These are middlebox-machinery resources. They exclude the client, application
 server, certificate server, Docker daemon, AESM, PCCS, and other host services.
-SGX memory is host RSS, not EPC usage. Direct therefore has no middlebox CPU or
-memory value.
+Shared SGX Go-retained memory is not EPC usage. Direct therefore has no
+middlebox CPU or memory value.
 
 Local Docker uses cgroup v2. The rootful Podman machine does not expose the same
 cgroup-v2 setup, so it uses a persistent `podman stats --all` stream with a
@@ -319,13 +331,23 @@ attestation. Full-handler startup includes schema/JWKS initialization.
 
 ### P5: Single-Client Persistent Operating Curve
 
-File: `P5-single-client-throughput-latency-cpu.pdf` from `configs.yml`.
+Files from `configs.yml`:
 
-The two panels show unfiltered mean steady end-to-end latency and mean total
+```text
+P5-single-client-throughput-latency-cpu.pdf
+P5a-single-client-throughput-latency.pdf
+P5b-single-client-throughput-cpu.pdf
+```
+
+The panels show p99-filtered mean steady end-to-end latency and mean total
 middlebox CPU versus aggregate offered requests/s for one persistent client.
-The x-axis is logarithmic. This intentionally reveals the physical serial
-limit of one connection; it is not a global capacity claim. Direct is omitted
-from the CPU panel because there is no middlebox.
+For each run, successful steady-state latency samples above that run's p99 are
+discarded before calculating its plotted mean. The x-axis is logarithmic. This
+intentionally reveals the physical serial limit of one connection; it is not a
+global capacity claim. Direct is omitted from the CPU panel because there is no
+middlebox. Invalid observations remain connected by the strategy line but are
+overlaid with red crosses; warnings use amber triangles. The split P5a/P5b
+figures are title-free and have independent legends.
 
 `P5-single-client-capacity.tex` reports the highest usable tested point for
 each strategy. Closed-loop points are not added to P5 by default because their
@@ -336,20 +358,20 @@ latency is measured under deliberate saturation.
 File: `P7-client-scalability.pdf` from
 `configs_clients_scalability.yml`.
 
-For Baremetal, SGX, Docker, and Docker + SGX, the left panel reports closed-loop
-maximum throughput at saturation versus `1, 5, 10, 50` persistent clients. The
-right panel reports mean latency at a fixed aggregate 10 requests/s. The fixed
-aggregate load isolates connection/worker-count overhead instead of increasing
-load with client count. These panels answer different questions and should be
-described separately.
+For Shared, Shared SGX, Container, and Container+SGX, the left panel reports
+closed-loop maximum throughput at saturation versus `1, 5, 10, 20, 30, 40, 50`
+persistent clients. The right panel reports mean latency at a fixed aggregate
+10 requests/s. The fixed aggregate load isolates connection/worker-count
+overhead instead of increasing load with client count. These panels answer
+different questions and should be described separately.
 
 ## 5. Paper Tables
 
 | Table | Contents and treatment |
 |---|---|
 | T1 `T1-selected-load-resources.tex` | Mean/p95 middlebox CPU and median/peak memory for one persistent client at 10 and 100 requests/s. Direct is N/A. |
-| T2 `T2-clients-memory.tex` | Median/peak total middlebox memory and memory/client at aggregate 10 requests/s for `1, 5, 10, 50` clients. |
-| T3 `T3-component-costs.tex` | Per-event sample count, median, p95, and contributing runs for worker selection/startup, delegation, quote, DC generation, validation, upstream setup, and application handling. Unlike main figures, these rows summarize event populations rather than run-level confidence intervals. |
+| T2 `T2-clients-memory.tex` | p99-filtered mean CPU and p99 middlebox memory at aggregate 10 requests/s for `1, 10, 30, 50` persistent clients. |
+| T3 `T3-component-costs.tex` | Mean request/response validation, quote generation/verification, DC generation, worker creation, and SGX process-startup costs. Each run contributes one mean and multiple runs produce a 95% confidence interval; missing measurements remain `--`. |
 | T4 `T4-handshake-capacity.tex` | Fixed-10-concurrency full/resumed handshake capacity. Reports the highest all-runs-usable rate and the next failed tested rate as a bracket, achieved handshakes/s, mean handshake latency, and run count. |
 
 T4's `clients=10` means a 10-request in-flight limit for fresh mode and 10 real

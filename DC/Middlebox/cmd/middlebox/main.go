@@ -674,6 +674,17 @@ func main() {
 		fmt.Fprintln(os.Stderr, "[OPERATOR] trace stop done")
 	}()
 
+	memorySampler, err := startGramineMemorySampler(*tracePathFlag)
+	if err != nil {
+		log.Printf("[OPERATOR_MEMORY] sampler disabled: %v", err)
+	} else if memorySampler != nil {
+		defer func() {
+			if err := memorySampler.Stop(); err != nil {
+				log.Printf("[OPERATOR_MEMORY] sampler stop: %v", err)
+			}
+		}()
+	}
+
 	reuseDC = *reuseDCFlag
 	minimalLogs = *minimalLogsFlag
 	logLevel = strings.ToLower(strings.TrimSpace(*logLevelFlag))

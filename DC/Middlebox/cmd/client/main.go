@@ -29,6 +29,8 @@ import (
 const (
 	benchmarkRequestTimeout   = 5 * time.Second
 	logicalClientPrimeSpacing = 100 * time.Millisecond
+	pacingSpin                = "spin"
+	pacingTimer               = "timer"
 )
 
 type headerList []string
@@ -124,25 +126,28 @@ func newHTTPClient(caPath string, serverName string, closeAfterRequest bool, ses
 	return &http.Client{Transport: tr, Timeout: benchmarkRequestTimeout}, tr, nil
 }
 
-func waitUntilOrDeadline(next time.Time, end time.Time) bool {
-	wait := time.Until(next)
-	remaining := time.Until(end)
-	if remaining <= 0 {
-		return false
-	}
-	if wait <= 0 {
+func waitUntilOrDone(next time.Time, done <-chan struct{}, pacing string) bool {
+	if pacing == pacingSpin {
+		for time.Now().Before(next) {
+			select {
+			case <-done:
+				return false
+			default:
+			}
+		}
 		return true
 	}
 
+	wait := time.Until(next)
+	if wait <= 0 {
+		return true
+	}
 	timer := time.NewTimer(wait)
-	deadlineTimer := time.NewTimer(remaining)
 	defer timer.Stop()
-	defer deadlineTimer.Stop()
-
 	select {
 	case <-timer.C:
-		return time.Now().Before(end)
-	case <-deadlineTimer.C:
+		return true
+	case <-done:
 		return false
 	}
 }
@@ -370,6 +375,7 @@ func handleRequestError(requestID int, err error, continueOnError bool) error {
 func runLoopFixedRate(
 	duration time.Duration,
 	rateRPS float64,
+	pacing string,
 	continueOnError bool,
 	maxInFlight int,
 	method string,
@@ -389,8 +395,11 @@ func runLoopFixedRate(
 		rate = time.Nanosecond
 	}
 
-	end := time.Now().Add(duration)
-	next := time.Now().Add(rate)
+	loopStart := time.Now()
+	end := loopStart.Add(duration)
+	next := loopStart.Add(rate)
+	runCtx, cancelRun := context.WithDeadline(context.Background(), end)
+	defer cancelRun()
 
 	requestID := 1
 
@@ -415,9 +424,7 @@ func runLoopFixedRate(
 	// HDR histogram (es. codahale/hdrhistogram) per evitare contesa.
 	var latMu sync.Mutex
 	latencies := make([]int64, 0, 1024)
-	loopStart := time.Now()
-
-	info(fmt.Sprintf("Fixed-rate loop started: duration=%v offered_rate=%.4f req/s interval=%v maxInFlight=%d", duration, rateRPS, rate, maxInFlight))
+	info(fmt.Sprintf("Fixed-rate loop started: duration=%v offered_rate=%.4f req/s interval=%v pacing=%s maxInFlight=%d", duration, rateRPS, rate, pacing, maxInFlight))
 
 scheduleLoop:
 	for {
@@ -431,10 +438,12 @@ scheduleLoop:
 		}
 
 		if now.Before(next) {
-			if !waitUntilOrDeadline(next, end) {
+			if !waitUntilOrDone(next, runCtx.Done(), pacing) {
 				break
 			}
-		} else if now.Sub(next) >= rate {
+			now = time.Now()
+		}
+		if now.Sub(next) >= rate {
 			/*
 				In ritardo: la scadenza di uno o più slot è già passata.
 
@@ -479,17 +488,9 @@ scheduleLoop:
 			- non vengono create goroutine infinite;
 			- il producer resta indietro se il sistema non riesce a sostenere il rate.
 		*/
-		remaining := time.Until(end)
-		if remaining <= 0 {
-			break
-		}
-		acquireTimer := time.NewTimer(remaining)
 		select {
 		case sem <- struct{}{}:
-			if !acquireTimer.Stop() {
-				<-acquireTimer.C
-			}
-		case <-acquireTimer.C:
+		case <-runCtx.Done():
 			break scheduleLoop
 		}
 		inFlight := currentInFlight.Add(1)
@@ -535,6 +536,7 @@ scheduleLoop:
 
 			if handledErr := handleRequestError(reqID, err, continueOnError); handledErr != nil {
 				if stop.CompareAndSwap(false, true) {
+					cancelRun()
 					select {
 					case errCh <- handledErr:
 					default:
@@ -627,6 +629,7 @@ func runLoopLogicalClients(
 	modeName string,
 	duration time.Duration,
 	rateRPS float64,
+	pacing string,
 	clients int,
 	requestsPerClient int,
 	continueOnError bool,
@@ -722,6 +725,14 @@ func runLoopLogicalClients(
 
 	loopStart := time.Now()
 	end := loopStart.Add(duration)
+	var runCtx context.Context
+	var cancelRun context.CancelFunc
+	if duration > 0 {
+		runCtx, cancelRun = context.WithDeadline(context.Background(), end)
+	} else {
+		runCtx, cancelRun = context.WithCancel(context.Background())
+	}
+	defer cancelRun()
 	closedLoop := rateRPS <= 0
 	globalInterval := time.Duration(0)
 	perClientRate := 0.0
@@ -741,7 +752,7 @@ func runLoopLogicalClients(
 	if closedLoop {
 		info(fmt.Sprintf("%s closed-loop started: duration=%v clients=%d requests_per_client=%d", modeName, duration, clients, requestsPerClient))
 	} else {
-		info(fmt.Sprintf("%s loop started: duration=%v total_rate=%.4f req/s clients=%d per_client_rate=%.4f req/s per_client_interval=%v requests_per_client=%d", modeName, duration, rateRPS, clients, perClientRate, perClientInterval, requestsPerClient))
+		info(fmt.Sprintf("%s loop started: duration=%v total_rate=%.4f req/s clients=%d per_client_rate=%.4f req/s per_client_interval=%v pacing=%s requests_per_client=%d", modeName, duration, rateRPS, clients, perClientRate, perClientInterval, pacing, requestsPerClient))
 	}
 
 	errCh := make(chan error, 1)
@@ -789,10 +800,12 @@ func runLoopLogicalClients(
 				if !closedLoop {
 					now := time.Now()
 					if now.Before(next) {
-						if !waitUntilOrDeadline(next, end) {
+						if !waitUntilOrDone(next, runCtx.Done(), pacing) {
 							return
 						}
-					} else if now.Sub(next) >= perClientInterval {
+						now = time.Now()
+					}
+					if now.Sub(next) >= perClientInterval {
 						missed := int64(now.Sub(next)/perClientInterval) + 1
 						totalLate.Add(missed)
 						next = next.Add(time.Duration(missed) * perClientInterval)
@@ -841,6 +854,7 @@ func runLoopLogicalClients(
 
 				if handledErr := handleRequestError(reqID, err, continueOnError); handledErr != nil {
 					if stop.CompareAndSwap(false, true) {
+						cancelRun()
 						select {
 						case errCh <- handledErr:
 						default:
@@ -992,6 +1006,7 @@ func main() {
 
 	durationFlag := flag.Int("d", 0, "duration in seconds")
 	rateFlag := flag.Float64("rate", 0, "total offered request rate in requests per second")
+	pacingFlag := flag.String("pacing", pacingSpin, "open-loop pacing: spin or timer")
 	modeFlag := flag.String("mode", "fresh", "experiment mode: fresh, persistent, or resumption")
 	clientsFlag := flag.Int("clients", 1, "number of logical client goroutines for persistent/resumption")
 	requestsPerClientFlag := flag.Int("requests-per-client", 0, "requests per logical client for persistent/resumption; 0 means run for duration")
@@ -1014,6 +1029,10 @@ func main() {
 	logLevel = strings.ToLower(strings.TrimSpace(*logLevelFlag))
 	if logLevel != "error" && logLevel != "debug" {
 		log.Fatalf("invalid -log_level %q: expected error or debug", *logLevelFlag)
+	}
+	pacing := strings.ToLower(strings.TrimSpace(*pacingFlag))
+	if pacing != pacingSpin && pacing != pacingTimer {
+		log.Fatalf("invalid -pacing %q: expected spin or timer", *pacingFlag)
 	}
 	if err := benchtrace.Start(*tracePathFlag, *traceBufferFlag, *traceDropFlag); err != nil {
 		log.Fatalf("trace start: %v", err)
@@ -1096,6 +1115,7 @@ func main() {
 		err = runLoopFixedRate(
 			duration,
 			*rateFlag,
+			pacing,
 			*continueFlag,
 			*maxInFlightFlag,
 			method,
@@ -1111,6 +1131,7 @@ func main() {
 			"persistent",
 			duration,
 			*rateFlag,
+			pacing,
 			*clientsFlag,
 			*requestsPerClientFlag,
 			*continueFlag,
@@ -1129,6 +1150,7 @@ func main() {
 			"resumption",
 			duration,
 			*rateFlag,
+			pacing,
 			*clientsFlag,
 			*requestsPerClientFlag,
 			*continueFlag,
