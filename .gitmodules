@@ -1,6 +1,7 @@
 [submodule "DC/go"]
 	path = DC/go
-	url = https://github.com/ricnava00/go
+	url = https://github.com/davideandreotti/go.git
+	branch = dcmb
 [submodule "ETSI/TLMSP/tlmsp-tools"]
 	path = ETSI/TLMSP/tlmsp-tools
 	url = https://github.com/davideandreotti/tlmsp-tools.git
