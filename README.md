@@ -1,163 +1,149 @@
 # A Middlebox for Verification of Encrypted FaaS Traffic
 
-## Virtual machine deployment
+This repository contains a research prototype for inspecting encrypted FaaS
+traffic without terminating the protected connection at an ordinary proxy. It
+implements and benchmarks two approaches:
 
-These steps must be run in the `ETSI` folder for the TLMSP middlebox, and in the `DC` folder for the Delegated
-Credentials middlebox.\
-_\<mb>_ is _etsi_ for TLMSP and _mb_ for DC.
+- **DCMB** uses TLS delegated credentials in a Go middlebox, with bare-metal,
+  Gramine SGX, and container-backed deployments.
+- **TLMSP** uses the ETSI TLMSP stack and a policy middlebox, with controlled
+  Full and No-handler benchmark profiles.
 
-### Installation
+The current experiment code targets Linux and has been tested primarily on
+Ubuntu 22.04. SGX and container experiments require additional host support;
+the bare-metal paths can be built and exercised independently.
 
-1. Install [VirtualBox](https://www.virtualbox.org/wiki/Downloads)
-2. Install [Vagrant](https://developer.hashicorp.com/vagrant/downloads)
-3. `cd vm`
-4. `vagrant up`, checking that all provisioning scripts run successfully
-5. Open 3 terminal windows, and for each of _client_, _\<mb>_, _openfaas_ run `vagrant ssh {name}`. It can be preferable
-   to have the terminals in this order, as to resemble the configuration of the physical network.
-6. On _openfaas_: `cd external/hello-retail/kubernetes; sudo ./deploy.sh`
+## Repository layout
 
-#### Notes
+| Path | Purpose |
+| --- | --- |
+| `DC/Middlebox/` | DCMB services, containers, experiment controller, and plotting |
+| `DC/go/` | Custom Go toolchain with delegated-credential support |
+| `ETSI/` | TLMSP configuration, policy components, and benchmarks |
+| `PerformanceMeasuring/` | Supporting request and certificate services |
+| `certs_external/` | Local certificate generator; generated keys are ignored |
 
-- While instructions for this won't be provided, the _openfaas_ VM built for TLMSP can be reused for the DC environment.\
-The _client_ VM can also be reused (also from TLMSP to DC), either by copying the Go installation manually or by
-directly using the `client` executable compiled from the _mb_ VM.
-- The openfaas webui is available on the host on http://127.0.0.1:5001. The username is `admin`; to get the password,
-  run on the server   
-  `sudo kubectl get secret -n openfaas basic-auth -o jsonpath="{.data.basic-auth-password}" | base64 --decode`
+The paper-output inventory is in
+[`DC/Middlebox/PAPER_FIGURES_MEMO.md`](DC/Middlebox/PAPER_FIGURES_MEMO.md).
 
-### Network layout
+## Initial setup
 
-- Client (_client_):
-    - IP: `192.168.56.1`
-    - Interface: `eth1`
-- Middblebox (_\<mb>_, client side):
-    - IP: `192.168.56.2`
-    - Interface: `eth1`
-- Middblebox (_\<mb>_, server side):
-    - IP: `192.168.58.2`
-    - Interface: `eth2`
-- Server (_openfaas_):
-    - IP: `192.168.58.1`
-    - Interface: `eth1`
+Clone the repository together with its pinned dependencies:
 
-For more information check the `ip-*.sh` scripts
-
-Check that the machines can ping each other by running `ping {IP} -I {interface}` and `ping {IP}` (the correct routes
-are preconfigured so both commands should work).
-
-## Bare-metal deployment
-
-It is recommended to use Ubuntu 22.04, as this is the only tested OS.
-
-No specific scripts are provided for bare-metal deployment, as the Vagrant scripts should work with a small amount of
-modifications. Check the `Vagrantfile` for the selected deployment and run the corresponding scripts (`provision-XXX.sh`
-for the first configuration and `ip-XXX.sh` after every reboot, using the correct interface names).\
-Instead of using the `shared` and `external` folders, their respective sources can be used.
-
-It is recommended to create only a single client, middlebox and server machine, supporting both TLMSP and DC (see [VM installation notes](#notes) for client and server, and for the middlebox execute the
-provisioning scripts for both variants).
-
-The tested network layout is the same as the VM one, with two ethernet cables connecting client-middlebox and
-middlebox-server. A configuration with a switch could be used, but it was not tested.\
-It was observed that the IP addresses sometimes get deleted after being set, `systemctl stop NetworkManager` resolves
-this issue, and if wireless connection is needed `systemctl start NetworkManager` can be run without side effects after
-all the machines' connections have been setup.
-
-Note that, for testing, an active internet connection will be required for all machines (at the startup of the middlebox
-executables, at the startup of openfaas, and to get a token on the client). Having an additional wireless or wired
-connection is preferable, but if only one connection is available the various executables can be run (and stopped,
-except for OpenFaaS) before changing the layout.
-
-## Execution
-
-To run the middlebox functionality, use the following commands
-
-### Server (all variants)
-
-```
-sudo kubectl port-forward --address 0.0.0.0 -n openfaas svc/gateway 8080:8080 >/dev/null 2>/dev/null &
+```bash
+git clone --recurse-submodules https://github.com/davideandreotti/dcmb.git
+cd dcmb
+git submodule update --init --recursive
 ```
 
-Running `curl 127.0.0.1:8080/function/init` should return no output
+Build the custom Go toolchain before building DCMB:
 
-### TLMSP
-
-#### Server
-
-```
-httpd -X
+```bash
+cd DC/go/src
+./make.bash
+cd ../../..
 ```
 
-The terminal should then stop asking for input  
-If after running httpd you can run more commands, then it failed to start. Check the logs in `~/tlmsp/install/var/logs/`
+Generate local certificate material:
 
-#### Middlebox
-
-```
-cd ~/shared/Middlebox
-tlmsp-mb -c ~/shared/Configurations/randomization.ucl -t mbox1 -P
+```bash
+cd certs_external
+./generate_server_certs.sh
+cd ..
 ```
 
-The terminal should then stop asking for input
+Generated private keys, delegated credentials, binaries, logs, and experiment
+outputs are intentionally excluded from Git. See
+[`certs_external/README.md`](certs_external/README.md) for certificate details.
 
-#### Client
+## DCMB
 
-To check that everything
-works, `curl -k --tlmsp /shared/Configurations/randomization.ucl 'https://192.168.58.1:4444/function/init'` should have no
-output, then proceed to the Testing phase.
+The complete build script creates the Go binaries, Gramine manifests, signed
+enclaves, and container images:
 
-### DC
-
-#### Server
-
-No additional commands are required
-
-#### Middlebox
-
-```
-cd ~/shared/Middlebox
-# ./compile.sh if required
-./middlebox
+```bash
+cd DC/Middlebox
+./compile.sh
 ```
 
-The terminal should then stop asking for input
+It expects the custom `DC/go` toolchain, an SGX-Go toolchain selected through
+`SGX_GOROOT`, Gramine commands, an enclave signing key, and Docker. For a
+bare-metal-only build, use the custom Go toolchain directly:
 
-#### Client
+```bash
+cd DC/Middlebox
+export GOROOT="$PWD/../go"
+export PATH="$GOROOT/bin:$PATH"
+export GOTOOLCHAIN=local
 
-```
-cd ~/shared/Middlebox
-# ./compile.sh if required
-```
-
-To check that everything works, `./client 'https://192.168.56.2:8443/function/init'` should have no output, then proceed
-to the Testing phase.
-
-## Testing
-
-Since the automatic script tests all the methods for TLMSP and DC, it is recommended to use a bare-metal deployment with
-all functionalities.
-```
-cd PerformanceMeasuring
-pip install -r requirements.txt
+go build -tags trace -o client ./cmd/client
+go build -tags trace -o certserver ./cmd/certserver
+go build -tags trace -o appserver ./cmd/appserver
+go build -tags trace -o middlebox ./cmd/middlebox
 ```
 
-#### Manual testing
+The full middlebox caches Google's public OIDC signing keys in `jwks.dat`
+relative to its working directory. The cache contains no private keys and is
+regenerated automatically when it is missing, invalid, or expired. Start the
+middlebox once from `DC/Middlebox` with internet access to create or refresh the
+root cache before building container images, which copy that file into the
+worker image.
 
-The `measure.py` script is available to run a single measurement. The correct middlebox executable must be run manually,
-and optionally `httpd` on the server for TLMSP tests.
+The benchmark controller requires Python 3 and PyYAML. Plotting additionally
+requires Matplotlib:
 
-#### Automatic testing
-
-The `automate.py` script takes care of starting the correct middlebox executables and `httpd` when needed, and runs all
-the configured tests.\
-The middlebox and server need to have an SSH server installed.\
-For the first execution, edit `automate.py` with the correct paths and passwords.
-
-### Results evaluation
-
-The `plot.py` script creates plots from the saved results. Running it will give more information on its usage.
-
-If LaTeX fonts are required for the output graphs, run:
+```bash
+python3 -m pip install pyyaml matplotlib
 ```
-sudo apt-get install dvipng texlive-latex-extra texlive-fonts-recommended cm-super
+
+Before running a campaign, edit its host addresses and working directories for
+the target machine. The five versioned campaign definitions are:
+
+- `benchmarking/configs.yml`: primary single-client paper campaign
+- `benchmarking/configs_clients_scalability.yml`: client scalability
+- `benchmarking/configs_handshake_capacity.yml`: fresh-handshake capacity
+- `benchmarking/configs_latency_dissection.yml`: traced latency dissection
+- `benchmarking/configs_startup.yml`: process and worker startup
+
+Run and plot a campaign from `DC/Middlebox`:
+
+```bash
+python3 benchmarking/run.py --config benchmarking/configs.yml
+python3 benchmarking/plot_latency.py experiments/<campaign-directory>
 ```
+
+The controller creates a timestamped directory under `experiments/`, copies
+the exact campaign YAML into it, and embeds the effective configuration in
+each run's metadata. Results remain local unless archived separately.
+
+## TLMSP
+
+TLMSP setup, component ownership, and the current execution path are described
+in [`ETSI/README.md`](ETSI/README.md). The self-managed latency, throughput,
+and handshake campaigns are documented in
+[`ETSI/Benchmarking/README.md`](ETSI/Benchmarking/README.md).
+
+TLMSP campaign directories can be copied unchanged beneath a DCMB campaign:
+
+```text
+DC/Middlebox/experiments/<dc-campaign>/tlmsp/latency/
+DC/Middlebox/experiments/<dc-campaign>/tlmsp/throughput/
+DC/Middlebox/experiments/<dc-campaign>/tlmsp/handshake/
+```
+
+The DCMB plotter discovers those directories automatically and adds the TLMSP
+series to compatible figures and tables.
+
+## Local and generated files
+
+The following stay outside version control:
+
+- raw experiment trees and generated plots;
+- generated certificates and private keys;
+- generated OIDC public-key caches (`jwks.dat`);
+- compiled binaries, Gramine manifests, and signatures;
+- one-off diagnostic, smoke, probe, and rerun configurations;
+- local notes and backups under `.local/`.
+
+Do not use `git clean -X` in this repository: ignored paths may contain the
+only local copy of experiment results or certificate material.

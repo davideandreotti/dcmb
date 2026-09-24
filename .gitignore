@@ -13,10 +13,14 @@
 /PerformanceMeasuring/*/
 /PerformanceMeasuring/*.png
 /DC/Middlebox/*.dat
+/DC/Middlebox/cmd/middlebox/jwks.dat
+/DC/Middlebox/stderr.txt
+/DC/Middlebox/stdout.txt
 /DC/certs/dc.cred
 /DC/certs/dckey.pem
 /ETSI/NewMiddlebox/*.dat
 go.sum
+!/DC/Middlebox/go.sum
 
 # TLMSP local build/install artifacts
 /.tlmsp/
@@ -70,6 +74,9 @@ kubectl.sha256
 .vscode/
 **/.vscode/
 
+# Local notes and backups
+/.local/
+
 # Python/cache artifacts
 __pycache__/
 **/__pycache__/
@@ -85,6 +92,15 @@ Log_container.txt
 /DC/bovisa/experiments/
 **/*.pdf
 **/*.png
+
+# Keep only the canonical benchmark campaigns in version control. One-off
+# smoke, probe, diagnostic, and rerun configurations remain local.
+/DC/Middlebox/benchmarking/configs*.yml
+!/DC/Middlebox/benchmarking/configs.yml
+!/DC/Middlebox/benchmarking/configs_clients_scalability.yml
+!/DC/Middlebox/benchmarking/configs_handshake_capacity.yml
+!/DC/Middlebox/benchmarking/configs_latency_dissection.yml
+!/DC/Middlebox/benchmarking/configs_startup.yml
 
 # Local/generated binaries
 DC/Middlebox/client.bck
