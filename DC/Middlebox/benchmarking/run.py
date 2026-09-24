@@ -787,15 +787,18 @@ class BaremetalDeployment(Deployment):
 
     def start(self) -> ManagedProcess:
         command = list(self.cfg.get("command", ["./middlebox", "-log_level", "error", "-minimal_logs=true"]))
-        command.extend(
-            [
-                "-trace",
-                str(self.run.traces_dir / "middlebox.bin"),
-                "-trace-buffer-events",
-                str(self.controller.trace_buffer_events),
-                f"-trace-drop-on-full={str(self.controller.trace_drop_on_full).lower()}",
-            ]
-        )
+        if self.controller.trace_enabled_for("middlebox") and bool(
+            self.cfg.get("trace_enabled", True)
+        ):
+            command.extend(
+                [
+                    "-trace",
+                    str(self.run.traces_dir / "middlebox.bin"),
+                    "-trace-buffer-events",
+                    str(self.controller.trace_buffer_events),
+                    f"-trace-drop-on-full={str(self.controller.trace_drop_on_full).lower()}",
+                ]
+            )
         self.proc = self.controller.spawn(
             role="middlebox",
             cmd=command,
@@ -828,15 +831,18 @@ class GramineSGXDeployment(BaremetalDeployment):
                 ["gramine-sgx", "middlebox", "-log_level", "error", "-minimal_logs=true"],
             )
         )
-        command.extend(
-            [
-                "-trace",
-                self.enclave_trace_path(),
-                "-trace-buffer-events",
-                str(self.controller.trace_buffer_events),
-                f"-trace-drop-on-full={str(self.controller.trace_drop_on_full).lower()}",
-            ]
-        )
+        if self.controller.trace_enabled_for("middlebox") and bool(
+            self.cfg.get("trace_enabled", True)
+        ):
+            command.extend(
+                [
+                    "-trace",
+                    self.enclave_trace_path(),
+                    "-trace-buffer-events",
+                    str(self.controller.trace_buffer_events),
+                    f"-trace-drop-on-full={str(self.controller.trace_drop_on_full).lower()}",
+                ]
+            )
         self.proc = self.controller.spawn(
             role="middlebox",
             cmd=command,
@@ -962,12 +968,17 @@ class DockerGatewayDeployment(Deployment):
             image,
             "-log_level",
             str(self.cfg.get("gateway_log_level", "error")),
-            "-trace",
-            "/trace/gateway.bin",
-            "-trace-buffer-events",
-            str(self.controller.trace_buffer_events),
-            f"-trace-drop-on-full={str(self.controller.trace_drop_on_full).lower()}",
         ])
+        if self.controller.trace_enabled_for("gateway"):
+            cmd.extend(
+                [
+                    "-trace",
+                    "/trace/gateway.bin",
+                    "-trace-buffer-events",
+                    str(self.controller.trace_buffer_events),
+                    f"-trace-drop-on-full={str(self.controller.trace_drop_on_full).lower()}",
+                ]
+            )
 
         self.proc = self.controller.spawn(
             role="gateway",
@@ -1136,6 +1147,13 @@ class Controller:
         self.cooldown_s = float(self.campaign.get("cooldown_s", 0))
         self.readiness_timeout_s = float(self.campaign.get("readiness_timeout_s", 30))
         self.cpu_interval_s = float(self.campaign.get("cpu_interval_s", 0.2))
+        trace_roles = self.campaign.get("trace_roles")
+        self.trace_roles = (
+            None if trace_roles is None else {str(role) for role in trace_roles}
+        )
+        self.resource_sampling_enabled = bool(
+            self.campaign.get("resource_sampling_enabled", True)
+        )
         self.trace_buffer_events = int(self.campaign.get("trace_buffer_events", 100000))
         self.trace_drop_on_full = bool(self.campaign.get("trace_drop_on_full", True))
         self.startup_only = bool(self.campaign.get("startup_only", False))
@@ -1143,6 +1161,9 @@ class Controller:
         campaign_name = sanitize(self.campaign.get("name", "campaign"))
         self.campaign_dir = self.output_root / f"{timestamp_name()}_{campaign_name}"
         self.summary_path = self.campaign_dir / "summary.csv"
+
+    def trace_enabled_for(self, role: str) -> bool:
+        return self.trace_roles is None or role in self.trace_roles
 
     def run(self) -> None:
         self.campaign_dir.mkdir(parents=True, exist_ok=True)
@@ -1314,11 +1335,14 @@ class Controller:
             if self.warmup_s > 0:
                 time.sleep(self.warmup_s)
 
-            cpu_monitor = ProcessCPUMonitor(managed, run_ctx.cpu_dir / "processes.csv", self.cpu_interval_s)
-            cpu_monitor.start()
-            container_monitor = deployment.container_monitor()
-            if container_monitor:
-                container_monitor.start()
+            if self.resource_sampling_enabled:
+                cpu_monitor = ProcessCPUMonitor(
+                    managed, run_ctx.cpu_dir / "processes.csv", self.cpu_interval_s
+                )
+                cpu_monitor.start()
+                container_monitor = deployment.container_monitor()
+                if container_monitor:
+                    container_monitor.start()
 
             client_proc = self.start_client(run_ctx, mode, clients, rate, deployment.client_url())
             managed.append(("client", client_proc))
@@ -1412,15 +1436,16 @@ class Controller:
     def start_certserver(self, run_ctx: RunContext) -> ManagedProcess:
         self._current_run = run_ctx
         command = list(self.server_cfg.get("certserver_command", ["./certserver"]))
-        command.extend(
-            [
-                "-trace",
-                str(run_ctx.traces_dir / "certserver.bin"),
-                "-trace-buffer-events",
-                str(self.trace_buffer_events),
-                f"-trace-drop-on-full={str(self.trace_drop_on_full).lower()}",
-            ]
-        )
+        if self.trace_enabled_for("certserver"):
+            command.extend(
+                [
+                    "-trace",
+                    str(run_ctx.traces_dir / "certserver.bin"),
+                    "-trace-buffer-events",
+                    str(self.trace_buffer_events),
+                    f"-trace-drop-on-full={str(self.trace_drop_on_full).lower()}",
+                ]
+            )
         return self.spawn(
             role="certserver",
             cmd=command,
@@ -1432,15 +1457,16 @@ class Controller:
     def start_appserver(self, run_ctx: RunContext) -> ManagedProcess:
         self._current_run = run_ctx
         command = list(self.server_cfg.get("appserver_command", ["./appserver"]))
-        command.extend(
-            [
-                "-trace",
-                str(run_ctx.traces_dir / "server.bin"),
-                "-trace-buffer-events",
-                str(self.trace_buffer_events),
-                f"-trace-drop-on-full={str(self.trace_drop_on_full).lower()}",
-            ]
-        )
+        if self.trace_enabled_for("server"):
+            command.extend(
+                [
+                    "-trace",
+                    str(run_ctx.traces_dir / "server.bin"),
+                    "-trace-buffer-events",
+                    str(self.trace_buffer_events),
+                    f"-trace-drop-on-full={str(self.trace_drop_on_full).lower()}",
+                ]
+            )
         return self.spawn(
             role="server",
             cmd=command,
@@ -1463,15 +1489,20 @@ class Controller:
             str(self.client_cfg.get("pacing", "spin")),
             "-servername",
             str(self.client_cfg.get("servername", "server")),
-            "-trace",
-            str(run_ctx.traces_dir / "client.bin"),
-            "-trace-buffer-events",
-            str(self.trace_buffer_events),
-            f"-trace-drop-on-full={str(self.trace_drop_on_full).lower()}",
             "-continue-on-error=true",
             "-log_level",
             str(self.client_cfg.get("log_level", "error")),
         ]
+        if self.trace_enabled_for("client"):
+            command.extend(
+                [
+                    "-trace",
+                    str(run_ctx.traces_dir / "client.bin"),
+                    "-trace-buffer-events",
+                    str(self.trace_buffer_events),
+                    f"-trace-drop-on-full={str(self.trace_drop_on_full).lower()}",
+                ]
+            )
         if mode in {"persistent", "resumption"}:
             command.extend(["-clients", str(clients)])
         else:

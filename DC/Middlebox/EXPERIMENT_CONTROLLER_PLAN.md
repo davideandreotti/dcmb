@@ -636,13 +636,14 @@ the large matrix.
   require direct, bare-metal, or shared-Gramine resumption runs.
 - Use 5 independent runs per throughput point, increasing to 10 for unstable
   p99 results; use 20-30 starts per startup category.
-- The current first-pass files intentionally use one 30-second repetition.
-  Single-client persistent rates are
+- The final latency, throughput, scalability, and handshake files use five
+  independent 60-second repetitions. Single-client persistent rates are
   `[1, 2, 5, 10, 25, 50, 100, 250, 500, 750, 1000, 1250, 1500, 2000, 3000, 4000, 5000]`.
-  Handshake capacity uses fixed concurrency 10 with full and resumed rates
-  `[1, 2, 3, 4, 5, 10, 25, 50, 100, 250, 500, 750, 1000, 1250, 1500, 2000, 3000, 4000, 5000]`.
-  Scalability uses clients `[1, 5, 10, 50]` only at closed loop and aggregate
-  10 requests/s.
+  SGX request sweeps end at `1500` after two established saturated points;
+  the other deployments retain the configured upper bound. Handshake capacity
+  uses fixed concurrency 10 and deployment-specific points around each known
+  capacity boundary. Scalability uses clients `[1, 5, 10, 20, 30, 40, 50]`
+  at closed loop and aggregate 10 requests/s.
 - Standalone/shared `middlebox_sgxgo` is excluded from runtime and startup
   campaigns. SGX-Go is evaluated only as the worker inside the container
   strategy; shared Gramine uses the standard `middlebox` binary.

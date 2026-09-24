@@ -2,8 +2,8 @@ campaign:
   name: paper_single_client
   output_root: experiments
   # Final paper: use >=5 runs/point, 10 for noisy p99 points; startup-only uses 20-30.
-  runs: 1
-  duration_s: 30
+  runs: 5
+  duration_s: 60
   warmup_s: 1
   cooldown_s: 10
   readiness_timeout_s: 30
@@ -72,6 +72,11 @@ deployments:
   - name: sgx_full_reuse
     kind: gramine_sgx
     modes: [fresh, persistent]
+    # The 1250 and 1500 request/s points are the two established saturated
+    # points; higher rates add no capacity information.
+    rates_by_mode:
+      fresh: [1]
+      persistent: [1, 2, 5, 10, 25, 50, 100, 250, 500, 750, 1000, 1250, 1500]
     command: ["gramine-sgx", "middlebox", "-log_level", "error", "-reuse_dc=true"]
     env:
       MBX_EMIT_QUOTE: "1"
@@ -123,6 +128,8 @@ deployments:
   - name: docker_sgxgo_full_reuse
     kind: docker_gateway
     modes: [persistent]
+    # As above, stop after the second established saturated point.
+    rates: [1, 2, 5, 10, 25, 50, 100, 250, 500, 750, 1000, 1250, 1500]
     prewarm_for_clients: true
     pool_readiness_timeout_s: 180
     worker_image: dcmiddlebox-worker:sgxgo

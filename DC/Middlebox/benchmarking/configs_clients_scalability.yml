@@ -2,8 +2,8 @@ campaign:
   name: clients_scalability
   output_root: experiments
   # Final paper: use >=5 runs/point, 10 for noisy p99 points; startup-only uses 20-30.
-  runs: 1
-  duration_s: 30
+  runs: 5
+  duration_s: 60
   warmup_s: 1
   cooldown_s: 10
   readiness_timeout_s: 30
@@ -50,14 +50,22 @@ client:
 
 client_matrix:
   modes: [persistent]
-  # Missing relaxed-load points shared by every deployment.
+  # Compare saturated closed-loop capacity with the same fixed aggregate load
+  # at every client count.
   points:
+    - {clients: 1, rate: 0}
     - {clients: 1, rate: 10}
+    - {clients: 5, rate: 0}
     - {clients: 5, rate: 10}
+    - {clients: 10, rate: 0}
     - {clients: 10, rate: 10}
+    - {clients: 20, rate: 0}
     - {clients: 20, rate: 10}
+    - {clients: 30, rate: 0}
     - {clients: 30, rate: 10}
+    - {clients: 40, rate: 0}
     - {clients: 40, rate: 10}
+    - {clients: 50, rate: 0}
     - {clients: 50, rate: 10}
 
 # NOTE: on the rootful Podman host, verify that the streaming stats collector
@@ -74,18 +82,6 @@ deployments:
     command: ["gramine-sgx", "middlebox", "-log_level", "error", "-reuse_dc=true"]
     env:
       MBX_EMIT_QUOTE: "1"
-    # Deployment-specific override: recover the failed high-concurrency
-    # closed-loop points in addition to the common 10 requests/s sweep.
-    points:
-      - {clients: 1, rate: 10}
-      - {clients: 5, rate: 10}
-      - {clients: 10, rate: 10}
-      - {clients: 20, rate: 10}
-      - {clients: 30, rate: 10}
-      - {clients: 40, rate: 10}
-      - {clients: 50, rate: 10}
-      # - {clients: 40, rate: 0}
-      # - {clients: 50, rate: 0}
 
   - name: docker_full_reuse
     kind: docker_gateway

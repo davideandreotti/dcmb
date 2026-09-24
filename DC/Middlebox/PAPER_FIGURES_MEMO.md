@@ -4,9 +4,9 @@ The experiment/setup method and exact data-treatment rules are documented in
 `PAPER_EXPERIMENT_METHOD.md`. Use that file when writing the paper's setup and
 methodology sections; this memo remains the concise artifact/status index.
 
-Current status: plotting and local campaign support are implemented. The YAML
-files checked in on 2026-07-31 use one 30-second repetition so the next sweep is
-still exploratory. Final confidence intervals require independent repetitions.
+Current status: plotting and local campaign support are implemented. The final
+latency, throughput, scalability, and handshake YAMLs use five independent
+60-second repetitions so their confidence intervals use run means.
 
 ## Paper Figures
 
@@ -18,6 +18,8 @@ Output:
 P1-P2-latency-dissection.pdf
 P1-handshake-latency-dissection.pdf
 P2-request-latency-dissection.pdf
+P2-request-latency-dissection-dual-scale.pdf
+P2-request-latency-dissection-integrated-validation-estimate.pdf
 ```
 
 One two-panel horizontal stacked-bar figure:
@@ -42,9 +44,27 @@ has already been read by the validation handler.
 
 The plot requires the complete matrix and otherwise skips the paper-numbered
 output. `configs_latency_dissection.yml` supplies the data. Worker tracing is
-enabled only in that controlled campaign. A future TLMSP comparison requires a
-small event-to-component adapter plus a strategy label/color; the bar layout is
-already prepared for another strategy.
+enabled only in that controlled campaign. TLMSP now emits standalone
+per-request CSVs for Full and No-handler profiles, and the plotter discovers a
+copied `<campaign>/tlmsp/latency` directory automatically. TLMSP is the final
+bar. Its handshake remains one grey component; its persistent request uses
+four grey communication/protocol intervals around request validation,
+application processing, and response validation. The two validation intervals
+are measured directly around the external handler calls. Full minus No-handler
+is retained as an aggregate external-path cross-check.
+
+Because the reference TLMSP handler path is much slower than the DCMB paths,
+the plotter also emits an alternative request-only figure. It shows the five
+DCMB bars and a right-clipped TLMSP bar on the readable DCMB scale. An arrow
+labels the complete TLMSP total, while an inset inside the plot frame shows all
+six bars at the true common scale. The ordinary P2 output retains the full
+single scale; both versions use identical source data and stack components.
+
+A separately named alternative is an integrated-validation estimate. It
+retains TLMSP's measured non-handler components but substitutes
+the measured Baremetal Go request- and response-validation durations for the
+two TLMSP external-process intervals. Its displayed total is recomputed from
+the resulting stack; it is not reported as a measured TLMSP configuration.
 
 ### P3. Latency Distributions
 
@@ -72,6 +92,9 @@ Student-t 95% confidence interval is shown only when multiple runs exist. The
 complete five-strategy matrix is required.
 
 Data source: `configs.yml`.
+
+When a copied TLMSP latency campaign is present, Full TLMSP is appended as the
+rightmost fresh-handshake and persistent-request violin.
 
 ### P4. Instance Startup Time
 
@@ -131,6 +154,11 @@ P5-single-client-capacity.tex
 Data source: `configs.yml`. The current sweep is dense at low load and at
 `1000-5000` requests/s.
 
+Copied Full and No-handler TLMSP throughput campaigns add separate series to
+P5a and the capacity table, including mean `tlmsp-mb` process-tree CPU. They are
+intentionally omitted from P5b under the TLMSP CPU-scope policy. Set
+`INCLUDE_TLMSP_IN_P5A = False` if their latency scale obscures the DC curves.
+
 ### P6. Handshake Capacity
 
 There is intentionally no primary P6 plot. The compact paper result is T4.
@@ -147,7 +175,7 @@ P7-client-scalability.pdf
 
 Two panels for Baremetal, SGX, Docker, and Docker + SGX:
 
-- closed-loop maximum throughput at saturation versus persistent clients;
+- closed-loop achieved throughput versus persistent clients;
 - mean open-loop latency at a fixed aggregate 10 requests/s versus clients.
 
 The plot labels these deployment strategies as Shared, Shared SGX, Container,
@@ -159,10 +187,18 @@ P7a-client-scalability-throughput.pdf
 P7b-client-scalability-latency.pdf
 ```
 
-Client counts are `1, 5, 10, 20, 30, 40, 50` with ordinary x-axis labels. The figure is not
-generated from single-client or partial-strategy campaigns.
+Client counts are `1, 5, 10, 20, 30, 40` with ordinary x-axis labels. The
+40-client Container+SGX closed-loop point is shown without special figure
+styling, although its runs had 1.2-3.8% request errors; disclose this in the
+paper text. The title-free panels use the P5 canvas, axes margins, and fonts.
+The figure is not generated from single-client or partial-strategy campaigns.
 
 Data source: `configs_clients_scalability.yml`.
+With `--scalability-rerun-dir`, five matching 30-client Container+SGX 10-rps
+runs are pooled with the five original runs for fixed-load latency and T2 only.
+The rerun remains a separate campaign, and the five supplemental run summaries
+are written to `P7-supplemental-run-summary.csv`. The other strategies and the
+closed-loop 30-client point retain five runs.
 
 ## Paper Tables
 
@@ -178,7 +214,7 @@ rates 10 and 100 requests/s. Direct is `N/A` because it has no middlebox.
 Output: `T2-clients-memory.tex`.
 
 Reports two rows per full-handler deployment at aggregate 10 requests/s with
-persistent clients 1, 10, 30, and 50. CPU is the mean after excluding samples
+persistent clients 1, 10, 30, and 40. CPU is the mean after excluding samples
 above each run's p99; memory is the per-run p99. Shared uses process-tree RSS,
 Shared SGX uses only the in-enclave `go_retained_bytes` sampler, and container
 strategies use aggregate gateway-plus-worker cgroup memory. Repeated runs are
@@ -202,17 +238,37 @@ Outputs:
 
 ```text
 T4-handshake-capacity.tex
-handshake-capacity-summary.csv
+T4-handshake-capacity-windowed.csv
 ```
 
 The LaTeX table contains Direct, Baremetal, SGX, Docker, and Docker + SGX full
 handshakes plus Docker and Docker + SGX resumed handshakes. Columns are
-deployment, handshake type, clients, sustained offered-rate bracket, achieved
-handshakes/s, mean handshake latency, and run count. The CSV preserves every
-rate and quality decision. The table requires the complete fixed-10-client
-matrix.
+deployment, handshake type, clients, maximum achieved handshakes/s, mean
+handshake latency, and run count. T4 uses a fixed 5-60 s window for both rate
+and latency, after the isolated warmup; full-run errors and timeouts still
+invalidate a rate point. Each run contributes one mean to the 95% confidence
+interval. The windowed CSV contains the selected runs. The DC rows require the
+complete fixed-10-client matrix; the optional TLMSP row comes from its separate
+open-loop sweep.
 
 Data source: `configs_handshake_capacity.yml`.
+
+Shared 1500/s and Shared SGX 250/s and 500/s use the no-instrumentation reruns.
+The superseded run directories and old T4 are retained in the sibling
+`2026-09-04_09-42-46_handshake_capacity_replaced_runs_archive` directory.
+Regenerate only T4 with:
+
+```bash
+python3 benchmarking/plot_latency.py <campaign-dir> --handshake-capacity-only
+```
+
+The focused command does not regenerate the general run summary or other plots.
+The old all-rate `handshake-capacity-summary.csv` is archived too; a full plot
+regeneration will recreate it from the merged runs.
+
+A copied No-handler TLMSP handshake campaign adds an open-loop Full-handshake
+row. It is labeled open-loop instead of inheriting the DC campaign's fixed
+10-client label.
 
 ## Analytical Outputs
 
@@ -231,8 +287,9 @@ e2e_timeseries_<strategy>_<handler>.pdf
 analysis-resource-summary.tex
 ```
 
-The handshake analytical plots also require the complete fixed-10-client
-matrix. All offered-rate axes are logarithmic with ordinary numeric labels.
+The handshake analytical plots also require the complete DC fixed-10-client
+matrix. An available TLMSP open-loop sweep is added to it. All offered-rate
+axes are logarithmic with ordinary numeric labels.
 Quality markers are explained once per affected run on stdout:
 
 ```text
@@ -242,7 +299,8 @@ Quality markers are explained once per affected run on stdout:
 
 ## Campaign Policy
 
-- Current YAMLs: one 30-second run per point for validation.
+- Final latency, throughput, scalability, and handshake YAMLs use five
+  independent 60-second runs per point.
 - Final normal points: at least 5 independent runs.
 - Noisy tail/capacity points: prefer 10 runs.
 - Startup categories: 20-30 starts.

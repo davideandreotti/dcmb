@@ -1,0 +1,6 @@
+/persistent_client
+/tlmsp_loadgen
+/results/
+__pycache__/
+*.events.log
+*.csv

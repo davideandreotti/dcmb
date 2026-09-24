@@ -101,6 +101,7 @@ func errorArg(err error) uint64 {
 
 func main() {
 	addr := flag.String("addr", defaultAddr, "listen address")
+	tlsEnabled := flag.Bool("tls", true, "serve HTTPS instead of plaintext HTTP")
 	certPath := flag.String("cert-path", defaultCertPath, "TLS certificate path")
 	keyPath := flag.String("key-path", defaultKeyPath, "TLS private key path")
 	tracePath := flag.String("trace", "", "binary trace output path")
@@ -124,29 +125,35 @@ func main() {
 		Handler:           appHandler{},
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       90 * time.Second,
-		TLSConfig: &tls.Config{
-			MinVersion: tls.VersionTLS13,
-			NextProtos: []string{"http/1.1"},
-		},
-		TLSNextProto: make(map[string]func(*http.Server, *tls.Conn, http.Handler)),
 	}
 
-	certificate, err := tls.LoadX509KeyPair(*certPath, *keyPath)
-	if err != nil {
-		log.Fatal(err)
-	}
-	srv.TLSConfig.Certificates = []tls.Certificate{certificate}
 	listener, err := net.Listen("tcp", *addr)
 	if err != nil {
 		log.Fatal(err)
 	}
-	tlsListener := tls.NewListener(listener, srv.TLSConfig)
+	transport := "plaintext"
+	serveListener := listener
+	if *tlsEnabled {
+		certificate, err := tls.LoadX509KeyPair(*certPath, *keyPath)
+		if err != nil {
+			listener.Close()
+			log.Fatal(err)
+		}
+		srv.TLSConfig = &tls.Config{
+			MinVersion:   tls.VersionTLS13,
+			NextProtos:   []string{"http/1.1"},
+			Certificates: []tls.Certificate{certificate},
+		}
+		srv.TLSNextProto = make(map[string]func(*http.Server, *tls.Conn, http.Handler))
+		serveListener = tls.NewListener(listener, srv.TLSConfig)
+		transport = "tls"
+	}
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- srv.Serve(tlsListener)
+		errCh <- srv.Serve(serveListener)
 	}()
-	fmt.Println("[REQUEST_SERVER_READY] listening=" + *addr + " protocol=http/1.1")
+	fmt.Printf("[REQUEST_SERVER_READY] listening=%s protocol=http/1.1 transport=%s\n", *addr, transport)
 
 	stopCh := make(chan os.Signal, 1)
 	signal.Notify(stopCh, os.Interrupt, syscall.SIGTERM)

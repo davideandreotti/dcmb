@@ -2,8 +2,8 @@ campaign:
   name: latency_dissection
   output_root: experiments
   # Use 1 for a smoke test and at least 5 for the final confidence intervals.
-  runs: 1
-  duration_s: 30
+  runs: 5
+  duration_s: 60
   warmup_s: 1
   cooldown_s: 2
   readiness_timeout_s: 30
@@ -38,80 +38,80 @@ client:
   max_in_flight: 16
 
 client_matrix:
-  modes: [fresh, persistent, resumption]
+  modes: [fresh] #, persistent, resumption]
   clients: [1]
   rates_by_mode:
     fresh: [1]
-    persistent: [10]
-    resumption: [5]
+#    persistent: [10]
+#    resumption: [5]
 
 deployments:
-  - name: direct
-    kind: direct
-    modes: [fresh, persistent]
+  # - name: direct
+  #   kind: direct
+  #   modes: [fresh, persistent]
 
-  - name: baremetal_full_noreuse
-    kind: baremetal
-    modes: [fresh]
-    command: ["./middlebox", "-log_level", "error", "-reuse_dc=false"]
+  # - name: baremetal_full_noreuse
+  #   kind: baremetal
+  #   modes: [fresh]
+  #   command: ["./middlebox", "-log_level", "error", "-reuse_dc=false"]
 
-  - name: baremetal_full_reuse
-    kind: baremetal
-    modes: [persistent]
-    command: ["./middlebox", "-log_level", "error", "-reuse_dc=true"]
+  # - name: baremetal_full_reuse
+  #   kind: baremetal
+  #   modes: [persistent]
+  #   command: ["./middlebox", "-log_level", "error", "-reuse_dc=true"]
 
-  - name: sgx_full_noreuse
-    kind: gramine_sgx
-    modes: [fresh]
-    command: ["gramine-sgx", "middlebox", "-log_level", "error", "-reuse_dc=false"]
-    env: {MBX_EMIT_QUOTE: "1"}
+  # - name: sgx_full_noreuse
+  #   kind: gramine_sgx
+  #   modes: [fresh]
+  #   command: ["gramine-sgx", "middlebox", "-log_level", "error", "-reuse_dc=false"]
+  #   env: {MBX_EMIT_QUOTE: "1"}
 
-  - name: sgx_full_reuse
-    kind: gramine_sgx
-    modes: [persistent]
-    command: ["gramine-sgx", "middlebox", "-log_level", "error", "-reuse_dc=true"]
-    env: {MBX_EMIT_QUOTE: "1"}
+  # - name: sgx_full_reuse
+  #   kind: gramine_sgx
+  #   modes: [persistent]
+  #   command: ["gramine-sgx", "middlebox", "-log_level", "error", "-reuse_dc=true"]
+  #   env: {MBX_EMIT_QUOTE: "1"}
 
-  - name: docker_full_noreuse
-    kind: docker_gateway
-    modes: [fresh]
-    worker_image: dcmiddlebox-worker:baseline
-    worker_reuse_dc: false
-    min_ready: 1
-    max_workers: 1
-    scale_up_by: 1
-    wait_for_full_pool: true
-    pool_readiness_timeout_s: 120
-    worker_trace_enabled: true
-    docker_api_timeout_ms: 30000
+  # - name: docker_full_noreuse
+  #   kind: docker_gateway
+  #   modes: [fresh]
+  #   worker_image: dcmiddlebox-worker:baseline
+  #   worker_reuse_dc: false
+  #   min_ready: 1
+  #   max_workers: 1
+  #   scale_up_by: 1
+  #   wait_for_full_pool: true
+  #   pool_readiness_timeout_s: 120
+  #   worker_trace_enabled: true
+  #   docker_api_timeout_ms: 30000
 
-  - name: docker_full_reuse
-    kind: docker_gateway
-    modes: [persistent]
-    worker_image: dcmiddlebox-worker:baseline
-    worker_reuse_dc: true
-    min_ready: 1
-    max_workers: 1
-    scale_up_by: 1
-    wait_for_full_pool: true
-    pool_readiness_timeout_s: 120
-    worker_trace_enabled: true
-    docker_api_timeout_ms: 30000
+  # - name: docker_full_reuse
+  #   kind: docker_gateway
+  #   modes: [persistent]
+  #   worker_image: dcmiddlebox-worker:baseline
+  #   worker_reuse_dc: true
+  #   min_ready: 1
+  #   max_workers: 1
+  #   scale_up_by: 1
+  #   wait_for_full_pool: true
+  #   pool_readiness_timeout_s: 120
+  #   worker_trace_enabled: true
+  #   docker_api_timeout_ms: 30000
 
-  - name: docker_full_resumption
-    kind: docker_gateway
-    modes: [resumption]
-    worker_image: dcmiddlebox-worker:baseline
-    worker_reuse_dc: false
-    ticket_identity_key: dcmb-dissection-resumption
-    delete_after_use: false
-    min_ready: 1
-    max_workers: 1
-    scale_up_by: 1
-    wait_for_full_pool: true
-    pool_readiness_timeout_s: 120
-    worker_trace_enabled: true
-    docker_api_timeout_ms: 30000
+  # - name: docker_full_resumption
+  #   kind: docker_gateway
+  #   modes: [resumption]
+  #   worker_image: dcmiddlebox-worker:baseline
+  #   worker_reuse_dc: false
+  #   ticket_identity_key: dcmb-dissection-resumption
+  #   delete_after_use: false
+  #   min_ready: 1
+  #   max_workers: 1
+  #   scale_up_by: 1
+  #   wait_for_full_pool: true
+  #   pool_readiness_timeout_s: 120
+  #   worker_trace_enabled: true
+  #   docker_api_timeout_ms: 30000
 
   - name: docker_sgxgo_full_noreuse
     kind: docker_gateway
@@ -120,8 +120,8 @@ deployments:
     worker_reuse_dc: false
     worker_sgx_enabled: true
     worker_emit_quote: "1"
-    min_ready: 1
-    max_workers: 1
+    min_ready: 2
+    max_workers: 2
     scale_up_by: 1
     wait_for_full_pool: true
     pool_readiness_timeout_s: 120
@@ -129,36 +129,36 @@ deployments:
     docker_api_timeout_ms: 30000
     docker_ready_timeout_ms: 30000
 
-  - name: docker_sgxgo_full_reuse
-    kind: docker_gateway
-    modes: [persistent]
-    worker_image: dcmiddlebox-worker:sgxgo
-    worker_reuse_dc: true
-    worker_sgx_enabled: true
-    worker_emit_quote: "1"
-    min_ready: 1
-    max_workers: 1
-    scale_up_by: 1
-    wait_for_full_pool: true
-    pool_readiness_timeout_s: 120
-    worker_trace_enabled: true
-    docker_api_timeout_ms: 30000
-    docker_ready_timeout_ms: 30000
+  # - name: docker_sgxgo_full_reuse
+  #   kind: docker_gateway
+  #   modes: [persistent]
+  #   worker_image: dcmiddlebox-worker:sgxgo
+  #   worker_reuse_dc: true
+  #   worker_sgx_enabled: true
+  #   worker_emit_quote: "1"
+  #   min_ready: 1
+  #   max_workers: 1
+  #   scale_up_by: 1
+  #   wait_for_full_pool: true
+  #   pool_readiness_timeout_s: 120
+  #   worker_trace_enabled: true
+  #   docker_api_timeout_ms: 30000
+  #   docker_ready_timeout_ms: 30000
 
-  - name: docker_sgxgo_full_resumption
-    kind: docker_gateway
-    modes: [resumption]
-    worker_image: dcmiddlebox-worker:sgxgo
-    worker_reuse_dc: false
-    worker_sgx_enabled: true
-    worker_emit_quote: "1"
-    ticket_identity_key: dcmb-dissection-resumption
-    delete_after_use: false
-    min_ready: 1
-    max_workers: 1
-    scale_up_by: 1
-    wait_for_full_pool: true
-    pool_readiness_timeout_s: 120
-    worker_trace_enabled: true
-    docker_api_timeout_ms: 30000
-    docker_ready_timeout_ms: 30000
+  # - name: docker_sgxgo_full_resumption
+  #   kind: docker_gateway
+  #   modes: [resumption]
+  #   worker_image: dcmiddlebox-worker:sgxgo
+  #   worker_reuse_dc: false
+  #   worker_sgx_enabled: true
+  #   worker_emit_quote: "1"
+  #   ticket_identity_key: dcmb-dissection-resumption
+  #   delete_after_use: false
+  #   min_ready: 1
+  #   max_workers: 1
+  #   scale_up_by: 1
+  #   wait_for_full_pool: true
+  #   pool_readiness_timeout_s: 120
+  #   worker_trace_enabled: true
+  #   docker_api_timeout_ms: 30000
+  #   docker_ready_timeout_ms: 30000

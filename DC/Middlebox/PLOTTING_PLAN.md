@@ -26,6 +26,8 @@ campaigns cannot create plausible-looking partial paper figures.
 P1-P2-latency-dissection.pdf
 P1-handshake-latency-dissection.pdf
 P2-request-latency-dissection.pdf
+P2-request-latency-dissection-dual-scale.pdf
+P2-request-latency-dissection-integrated-validation-estimate.pdf
 P3a-handshake-latency-distribution-linear.pdf
 P3a-handshake-latency-distribution-log.pdf
 P3b-persistent-request-latency-distribution.pdf
@@ -82,12 +84,32 @@ Connection and delegation binding events correlate client, gateway, worker,
 certserver, and Go application-server traces for latency dissection. Component
 deltas across different machines require synchronized clocks.
 
+If `<campaign>/tlmsp/` exists, the plotter recursively discovers copied TLMSP
+campaigns from their `summary.csv` files. TLMSP events use Unix wall-clock
+nanoseconds. The adapter drops the first 10 measured rows per run, uses
+`end_to_end_ms` for fresh latency and `request_ms` for persistent latency, and
+does not synthesize DC trace events. Full latency data supplies P1/P2 and P3;
+Full and No-handler persistent sweeps are distinct P5/P5a and capacity-table
+series; No-handler fresh sweeps supply the handshake-capacity comparison.
+
 The request dissection uses repeated path-level components rather than a
 generic remainder: client-middlebox segments share one color, middlebox-server
 segments share one color, and request/response validation share one legend
 item. The final response path absorbs reverse-proxy streaming and tiny
 uninstrumented callback-boundary gaps because no complete-upstream-body event
 exists.
+
+When TLMSP data is present, the ordinary P2 file retains one common absolute
+scale. The additional dual-scale P2 file keeps all rows in one compact frame,
+limits the main axis to the DCMB range, and marks the clipped TLMSP bar with an
+arrow and its exact total. An inset in the upper-right whitespace shows the
+complete plot at its true common scale. No source component is removed.
+
+The integrated-validation estimate is a separate sensitivity figure, not a
+measured TLMSP deployment. It preserves TLMSP's measured communication,
+protocol, and application components, replaces only its two external-handler
+intervals with the measured Baremetal Go request- and response-validation
+components, and recomputes the displayed total from that stack.
 
 ## Statistical Rules
 
@@ -131,7 +153,7 @@ visible but do not connect to healthy curves.
 - Direct is excluded from middlebox CPU/memory outputs.
 
 T2 uses full-handler persistent runs at 10 requests/s and client counts 1, 10,
-30, and 50. It reports a p99-filtered sample mean for CPU and p99 memory. A
+30, and 40. It reports a p99-filtered sample mean for CPU and p99 memory. A
 later refinement should replace the sampled CPU mean with CPU time integrated
 over the complete steady-state window.
 
@@ -146,8 +168,12 @@ final Podman measurements.
 - P3, P5, T1: `configs.yml`.
 - P4 and T3 worker/startup rows: `configs_startup.yml`; the focused SGX-Go
   process-startup point uses `configs_startup_sgxgo.yml`.
-- P7 and T2: `configs_clients_scalability.yml`.
+- P7 and T2: `configs_clients_scalability.yml`, optionally supplemented by
+  `configs_clients_scalability_docker_sgx_30_rate10_rerun.yml` via
+  `--scalability-rerun-dir` (ten runs only for the 30-client fixed-rate point).
 - T4 and handshake analytical curves: `configs_handshake_capacity.yml`.
+- TLMSP: unchanged ETSI campaign directories copied below
+  `<campaign>/tlmsp/{latency,throughput,handshake}`.
 
 Plot styling remains local to each function rather than exposed through a large
 CLI. Titles, colors, labels, filenames, percentile clipping, and optional
@@ -159,7 +185,8 @@ paper pass.
 - Run final repeated campaigns and select between the linear/log P3a versions.
 - Replace the sampled mean CPU statistic with duration-integrated CPU time over
   the steady-state window for the final resource accounting pass.
-- Add a TLMSP trace adapter/strategy to P1/P3 if that comparison is retained.
+- Decide whether the TLMSP P5a line helps at the final scale. It can be removed
+  without changing data by setting `INCLUDE_TLMSP_IN_P5A = False`.
 - Validate Podman resource collection on Bovisa.
 - Implement remote orchestration and clock-synchronization checks before using
   cross-machine component deltas.

@@ -3,7 +3,7 @@
 	url = https://github.com/ricnava00/go
 [submodule "ETSI/TLMSP/tlmsp-tools"]
 	path = ETSI/TLMSP/tlmsp-tools
-	url = https://github.com/ricnava00/tlmsp-tools.git
+	url = https://github.com/davideandreotti/tlmsp-tools.git
 	branch = master
 [submodule "ETSI/TLMSP/tlmsp-openssl"]
 	path = ETSI/TLMSP/tlmsp-openssl
@@ -11,7 +11,7 @@
 	branch = master-tlmsp
 [submodule "ETSI/TLMSP/tlmsp-curl"]
 	path = ETSI/TLMSP/tlmsp-curl
-	url = https://github.com/ricnava00/tlmsp-curl.git
+	url = https://github.com/davideandreotti/tlmsp-curl.git
 	branch = master-tlmsp
 [submodule "ETSI/TLMSP/tlmsp-apache-httpd"]
 	path = ETSI/TLMSP/tlmsp-apache-httpd

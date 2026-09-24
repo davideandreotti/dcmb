@@ -29,7 +29,7 @@ activity {
 
     action {
         send {
-            handler = "./client {}"
+            template = ${0}
             context = header
         }
     }
@@ -45,7 +45,7 @@ activity {
 
     action {
         send {
-            handler = "./client {}"
+            template = ${0}
             context = header
         }
     }
