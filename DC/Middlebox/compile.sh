@@ -10,6 +10,15 @@ SGX_GOROOT="${SGX_GOROOT:-/home/bonsai/go-sgx-mod}"
 SGX_GO="$SGX_GOROOT/bin/go"
 ENCLAVE_KEY="${GRAMINE_ENCLAVE_KEY:-$HOME/.config/gramine/enclave-key.pem}"
 BASE_PATH="$PATH"
+BUILD_DCAP_VERIFY="${BUILD_DCAP_VERIFY:-1}"
+
+case "$BUILD_DCAP_VERIFY" in
+    0|1) ;;
+    *)
+        echo "BUILD_DCAP_VERIFY must be 0 or 1" >&2
+        exit 1
+        ;;
+esac
 
 if [[ ! -x "$CUSTOM_GO" ]]; then
     echo "Custom Go not found or not executable: $CUSTOM_GO" >&2
@@ -19,7 +28,7 @@ fi
 
 if [[ "${1:-all}" != certserver && ! -x "$SGX_GO" ]]; then
     echo "SGX Go not found or not executable: $SGX_GO" >&2
-    echo "Set SGX_GOROOT to the go-sgx-mod copy, or build /home/bonsai/go-sgx-mod first." >&2
+    echo "Set SGX_GOROOT to the go-sgx-mod copy, or build $SGX_GOROOT first." >&2
     exit 1
 fi
 
@@ -57,7 +66,11 @@ join_tags() {
 }
 
 common_build_args=(-tags "$(join_tags "${common_tags[@]}")")
-certserver_build_args=(-tags "$(join_tags trace dcapverify)")
+certserver_tags=(trace)
+if [[ "$BUILD_DCAP_VERIFY" == "1" ]]; then
+    certserver_tags+=(dcapverify)
+fi
+certserver_build_args=(-tags "$(join_tags "${certserver_tags[@]}")")
 middlebox_build_args=(-tags "$(join_tags trace)")
 middlebox_empty_build_args=(-tags "$(join_tags trace emptyhandler)")
 
@@ -76,6 +89,11 @@ build() {
 }
 
 build_certserver() {
+    if [[ "$BUILD_DCAP_VERIFY" == "0" ]]; then
+        echo "[COMPILE] DCAP verification disabled; skipping QVL build"
+        build "certserver" "cmd/certserver" "$SCRIPT_DIR/certserver" "${certserver_build_args[@]}"
+        return
+    fi
     require_command cmake
     cmake -S "$SCRIPT_DIR/cmd/certserver" -B "$SCRIPT_DIR/build/quoteverify" \
         -DDCAP_SOURCE="${DCAP_SOURCE:-$HOME/linux-sgx/external/dcap_source}" \
@@ -188,5 +206,9 @@ build_docker_images() {
     build_gramine_manifest "middlebox"
     build_gramine_manifest "middlebox_sgxgo"
     build_gramine_manifest "middlebox_emptyhandler"
-    build_docker_images
+    if [[ "${BUILD_CONTAINER_IMAGES:-1}" == "1" ]]; then
+        build_docker_images
+    else
+        echo "[COMPILE] skipping container images (BUILD_CONTAINER_IMAGES=$BUILD_CONTAINER_IMAGES)"
+    fi
 )

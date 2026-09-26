@@ -26,7 +26,19 @@ From `DC/Middlebox`:
 DCAP_SOURCE=/home/bonsai/linux-sgx/external/dcap_source ./compile.sh certserver
 ```
 
-The full `./compile.sh` also builds this verifier. `DCAP_SOURCE` defaults to
+The full `./compile.sh` also builds this verifier. `BUILD_DCAP_VERIFY` defaults to
+`1`, which builds QVL and enables the `dcapverify` Go tag. For experiments without
+attestation, use:
+
+```sh
+BUILD_DCAP_VERIFY=0 ./compile.sh certserver
+```
+
+The toggle also applies to the full `./compile.sh`. With `0`, QVL/CMake is skipped
+and the existing non-DCAP stub is built. It does not change quote emission or
+Gramine's runtime attestation settings; those must be disabled separately.
+
+`DCAP_SOURCE` defaults to
 `$HOME/linux-sgx/external/dcap_source`; use an initialized Intel checkout, including
 its QVL sources. Tested with DCAP 1.23, commit
 `808e4c7df2796bb2374d67ca95493bf0cb71450a`, installed DCAP 1.23 development libraries,
