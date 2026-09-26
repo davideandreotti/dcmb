@@ -262,8 +262,9 @@ If strict JWT validation is needed later, add a config/build option or edit
 these constants. Strict mode will also require valid tokens and correct JWKS
 availability.
 
-### OIDC/JWKS Startup Caveat
+### OIDC/JWKS Validation Caveat
 
-The full handler initializes OIDC/JWKS state at process startup. If the cache is
-missing or expired, startup may contact the configured OIDC provider. This may
-matter for startup-latency experiments and should be checked before final runs.
+The full handler initializes OIDC/JWKS state lazily when real JWT validation is
+requested. The canonical benchmark requests use `X-Testing`, so they neither
+read the cache nor contact the configured OIDC provider. Strict JWT experiments
+still require a valid cache or network access.

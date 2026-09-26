@@ -16,7 +16,6 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io"
-	"log"
 	"mime"
 	"net/http"
 	"os"
@@ -43,6 +42,8 @@ const (
 
 var ctx = context.Background()
 var verifier *oidc.IDTokenVerifier
+var verifierOnce sync.Once
+var verifierErr error
 
 type Message struct {
 	ConnectionID int
@@ -149,6 +150,9 @@ func generateCode() string {
 }
 
 func parseJWT(idToken string) (map[string]any, error) {
+	if err := initializeVerifier(); err != nil {
+		return nil, err
+	}
 	token, err := verifier.Verify(ctx, idToken)
 	if err != nil {
 		return nil, err
@@ -430,50 +434,57 @@ func refreshProviderConfig(ctx context.Context, issuer string) ([]crypto.PublicK
 	return keys, expiration, nil
 }
 
-func init() {
-	gob.Register(rsa.PublicKey{})
-	gob.Register(ecdsa.PublicKey{})
-	gob.Register(ed25519.PublicKey{})
-	reload := false
-	serializedBytes, err := os.ReadFile(JWKSCacheFile)
-	if err != nil {
-		reload = true
-	}
-	cached, err := readCache(serializedBytes)
-	if err != nil {
-		reload = true
-	}
-	publicKeys := cached.Keys
-	expiration := cached.Expiration
-	if expiration.Before(time.Now()) {
-		reload = true
-	}
-	if reload {
-		info("Reloading jwks")
-		publicKeys, expiration, err = refreshProviderConfig(ctx, oidcServer)
+func initializeVerifier() error {
+	verifierOnce.Do(func() {
+		gob.Register(rsa.PublicKey{})
+		gob.Register(ecdsa.PublicKey{})
+		gob.Register(ed25519.PublicKey{})
+
+		cached := cachedKeys{}
+		reload := false
+		serializedBytes, err := os.ReadFile(JWKSCacheFile)
 		if err != nil {
-			log.Fatal(err)
+			reload = true
+		} else if cached, err = readCache(serializedBytes); err != nil {
+			reload = true
 		}
-		serialized, err := writeCache(cachedKeys{Keys: publicKeys, Expiration: expiration})
-		if err != nil {
-			log.Fatal(err)
+
+		publicKeys := cached.Keys
+		expiration := cached.Expiration
+		if expiration.Before(time.Now()) {
+			reload = true
 		}
-		err = os.WriteFile(JWKSCacheFile, serialized, 0644)
-		if err != nil {
-			log.Fatal(err)
+		if reload {
+			info("Reloading jwks")
+			publicKeys, expiration, err = refreshProviderConfig(ctx, oidcServer)
+			if err != nil {
+				verifierErr = err
+				return
+			}
+			serialized, err := writeCache(cachedKeys{Keys: publicKeys, Expiration: expiration})
+			if err != nil {
+				verifierErr = err
+				return
+			}
+			if err = os.WriteFile(JWKSCacheFile, serialized, 0644); err != nil {
+				verifierErr = err
+				return
+			}
 		}
-	}
-	//Validate wants pointers
-	for i, key := range publicKeys {
-		switch key.(type) {
-		case rsa.PublicKey:
-			tmp := key.(rsa.PublicKey)
-			publicKeys[i] = crypto.PublicKey(&tmp)
-		case ecdsa.PublicKey:
-			tmp := key.(ecdsa.PublicKey)
-			publicKeys[i] = crypto.PublicKey(&tmp)
+
+		// Validate wants pointers.
+		for i, key := range publicKeys {
+			switch key.(type) {
+			case rsa.PublicKey:
+				tmp := key.(rsa.PublicKey)
+				publicKeys[i] = crypto.PublicKey(&tmp)
+			case ecdsa.PublicKey:
+				tmp := key.(ecdsa.PublicKey)
+				publicKeys[i] = crypto.PublicKey(&tmp)
+			}
 		}
-	}
-	keySet := &oidc.StaticKeySet{PublicKeys: publicKeys}
-	verifier = oidc.NewVerifier(oidcServer, keySet, &oidc.Config{SkipClientIDCheck: true})
+		keySet := &oidc.StaticKeySet{PublicKeys: publicKeys}
+		verifier = oidc.NewVerifier(oidcServer, keySet, &oidc.Config{SkipClientIDCheck: true})
+	})
+	return verifierErr
 }

@@ -10,9 +10,8 @@ campaign:
   trace_buffer_events: 100000
   trace_drop_on_full: true
 
-# Full-handler startup includes schema/JWKS initialization. Refresh jwks.dat or
-# provide network access before the campaign so OIDC discovery is not a failure
-# or an uncontrolled startup-time component.
+# Full-handler startup includes schema initialization. JWKS initialization is
+# lazy and is not reached by the canonical X-Testing benchmark requests.
 # Delegation reuse and quote settings are intentionally absent: startup ends at
 # worker readiness, before a client can trigger delegation or attestation work.
 

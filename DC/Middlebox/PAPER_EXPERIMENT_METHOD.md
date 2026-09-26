@@ -48,8 +48,9 @@ SNI is fixed to `server`. The `X-Testing` header selects dummy token validation
 so the benchmark measures the validation pipeline without depending on an
 external identity provider. The full handler still matches the endpoint,
 validates the JSON schema, checks the state transition/code policy, and
-processes the response. Schemas and JWKS material are initialized once at
-middlebox startup, not per request. Session state is keyed by `X-Client-ID`,
+processes the response. Schemas are initialized at middlebox startup. JWKS
+material is initialized lazily only for real JWT validation and is not touched
+by the canonical `X-Testing` requests. Session state is keyed by `X-Client-ID`,
 uses per-entry locking, has a 2-second TTL, and is lazily cleaned every 1000
 requests. The empty-handler binary is an ablation and is not a primary paper
 strategy.
@@ -327,7 +328,8 @@ worker's TCP `:8443` readiness. Gateway startup and gateway readiness are not
 included in the container bars.
 
 Startup ends at listener/readiness and excludes client-triggered delegation and
-attestation. Full-handler startup includes schema/JWKS initialization.
+attestation. Full-handler startup includes schema initialization; JWKS loading
+is excluded because canonical requests use dummy token validation.
 
 ### P5: Single-Client Persistent Operating Curve
 
