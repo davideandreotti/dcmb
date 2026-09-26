@@ -315,6 +315,115 @@ class ProcessCPUMonitor:
                 time.sleep(self.interval_s)
 
 
+class SGXEPCMonitor:
+    CSV_HEADER = (
+        "timestamp_monotonic_ns,ewb_success_total,eldu_success_total,"
+        "epc_total_pages,epc_free_pages,epc_occupied_pages,epc_occupied_bytes"
+    )
+
+    def __init__(self, run: "RunContext", interval_ms: int, readiness_timeout_s: float) -> None:
+        self.run = run
+        self.interval_ms = interval_ms
+        self.readiness_timeout_s = readiness_timeout_s
+        self.total_bytes = self._read_total_bytes()
+        self.total_pages = self.total_bytes // 4096
+        self.clock_offset_ns = time.time_ns() - time.monotonic_ns()
+        self.proc: ManagedProcess | None = None
+
+    @staticmethod
+    def _read_total_bytes() -> int:
+        paths = sorted(Path("/sys/devices/system/node").glob("node*/x86/sgx_total_bytes"))
+        values = [int(path.read_text(encoding="utf-8").strip()) for path in paths]
+        total = sum(values)
+        if total <= 0:
+            raise RuntimeError("could not determine total EPC bytes from sysfs")
+        return total
+
+    def start(self) -> None:
+        bpftrace = shutil.which("bpftrace")
+        if not bpftrace:
+            raise RuntimeError("SGX EPC monitoring requested but bpftrace was not found")
+
+        command = [bpftrace, "-q", "-B", "line", "-e", self._program()]
+        if os.geteuid() != 0:
+            sudo = shutil.which("sudo")
+            if not sudo:
+                raise RuntimeError("SGX EPC monitoring requires root, but sudo was not found")
+            command = [sudo, "-n", *command]
+
+        self.proc = ManagedProcess(
+            role="sgx_epc_monitor",
+            cmd=command,
+            cwd=PROJECT_DIR,
+            stdout_path=self.run.epc_dir / "sgx_epc.csv",
+            stderr_path=self.run.stderr_dir / "sgx_epc_monitor.log",
+            ready_patterns=["timestamp_monotonic_ns,ewb_success_total"],
+        )
+        self.proc.start()
+        try:
+            self.proc.wait_ready(self.readiness_timeout_s)
+        except Exception as exc:
+            self.proc.join_readers()
+            try:
+                detail = self.proc.stderr_path.read_text(encoding="utf-8").strip()
+            except OSError:
+                detail = ""
+            raise RuntimeError(f"SGX EPC monitor failed to start: {detail or exc}") from exc
+
+    def stop(self) -> None:
+        if self.proc:
+            self.proc.stop(grace_s=5)
+            self._clean_csv()
+
+    def _clean_csv(self) -> None:
+        """Remove bpftrace's automatic map dump on shutdown from the CSV."""
+        path = self.run.epc_dir / "sgx_epc.csv"
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return
+        data_row = re.compile(r"^\d+,\d+,\d+,\d+,-?\d+,-?\d+,-?\d+$")
+        kept = [line for line in lines if line == self.CSV_HEADER or data_row.fullmatch(line)]
+        path.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
+
+    def metadata(self) -> dict[str, Any]:
+        return {
+            "scope": "system_wide",
+            "interval_ms": self.interval_ms,
+            "epc_total_bytes": self.total_bytes,
+            "epc_total_pages": self.total_pages,
+            "monotonic_to_realtime_offset_ns": self.clock_offset_ns,
+            "process": self.proc.metadata() if self.proc else None,
+        }
+
+    def _program(self) -> str:
+        return f"""
+kretprobe:__sgx_encl_ewb
+/retval == 0/
+{{
+    @ewb_success++;
+}}
+
+kretprobe:__sgx_encl_eldu
+/retval == 0/
+{{
+    @eldu_success++;
+}}
+
+interval:ms:{self.interval_ms}
+{{
+    @sample_count++;
+    if (@sample_count == 1) {{
+        printf("{self.CSV_HEADER}\\n");
+    }}
+    $free = *(int64 *)kaddr("sgx_nr_free_pages");
+    printf("%llu,%llu,%llu,%llu,%lld,%lld,%lld\\n",
+           nsecs, @ewb_success, @eldu_success, {self.total_pages}, $free,
+           {self.total_pages} - $free, ({self.total_pages} - $free) * 4096);
+}}
+""".strip()
+
+
 class ContainerStatsMonitor:
     def __init__(
         self,
@@ -1058,8 +1167,19 @@ class RunContext:
     def cpu_dir(self) -> Path:
         return self.directory / "cpu"
 
+    @property
+    def epc_dir(self) -> Path:
+        return self.directory / "epc"
+
     def create(self) -> None:
-        for path in [self.stdout_dir, self.stderr_dir, self.traces_dir, self.csv_dir, self.cpu_dir]:
+        for path in [
+            self.stdout_dir,
+            self.stderr_dir,
+            self.traces_dir,
+            self.csv_dir,
+            self.cpu_dir,
+            self.epc_dir,
+        ]:
             path.mkdir(parents=True, exist_ok=True)
 
 
@@ -1147,6 +1267,14 @@ class Controller:
         self.cooldown_s = float(self.campaign.get("cooldown_s", 0))
         self.readiness_timeout_s = float(self.campaign.get("readiness_timeout_s", 30))
         self.cpu_interval_s = float(self.campaign.get("cpu_interval_s", 0.2))
+        self.sgx_epc_monitor_enabled = bool(
+            self.campaign.get("sgx_epc_monitor_enabled", False)
+        )
+        self.sgx_epc_interval_ms = int(
+            self.campaign.get("sgx_epc_interval_ms", 1000)
+        )
+        if self.sgx_epc_interval_ms <= 0:
+            raise ValueError("campaign.sgx_epc_interval_ms must be positive")
         trace_roles = self.campaign.get("trace_roles")
         self.trace_roles = (
             None if trace_roles is None else {str(role) for role in trace_roles}
@@ -1311,6 +1439,7 @@ class Controller:
         managed: list[tuple[str, ManagedProcess]] = []
         cpu_monitor: ProcessCPUMonitor | None = None
         container_monitor: ContainerStatsMonitor | None = None
+        sgx_epc_monitor: SGXEPCMonitor | None = None
         client_proc: ManagedProcess | None = None
 
         try:
@@ -1323,6 +1452,16 @@ class Controller:
                 appserver = self.start_appserver(run_ctx)
                 managed.append(("server", appserver))
                 appserver.wait_ready(self.readiness_timeout_s)
+
+            if self.sgx_epc_monitor_enabled and self.deployment_uses_sgx(
+                effective_deployment_cfg
+            ):
+                sgx_epc_monitor = SGXEPCMonitor(
+                    run_ctx,
+                    self.sgx_epc_interval_ms,
+                    self.readiness_timeout_s,
+                )
+                sgx_epc_monitor.start()
 
             deployment_proc = deployment.start()
             if deployment_proc:
@@ -1363,6 +1502,9 @@ class Controller:
             if container_monitor:
                 container_monitor.stop()
                 metadata["resource_collector"] = container_monitor.metadata()
+            if sgx_epc_monitor:
+                sgx_epc_monitor.stop()
+                metadata["sgx_epc_monitor"] = sgx_epc_monitor.metadata()
             try:
                 deployment.stop()
             except Exception as exc:
@@ -1375,6 +1517,10 @@ class Controller:
             self.write_metadata(run_ctx, metadata)
             self.write_startup_csv(run_ctx, managed)
             self.convert_traces(run_ctx)
+
+    @staticmethod
+    def deployment_uses_sgx(cfg: dict[str, Any]) -> bool:
+        return cfg.get("kind") == "gramine_sgx" or bool(cfg.get("worker_sgx_enabled", False))
 
     def wait_for_client_or_deployment(
         self,

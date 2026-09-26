@@ -13,7 +13,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.ticker import LogLocator, NullLocator, StrMethodFormatter
+from matplotlib.ticker import FuncFormatter, LogLocator, NullLocator, StrMethodFormatter
 from matplotlib.transforms import ScaledTranslation
 
 
@@ -2517,6 +2517,173 @@ def plot_aggregate_scalability(summary_rows: list[dict[str, Any]], output_path: 
     return [output_path, *panel_paths]
 
 
+def epc_platform(run_name: str) -> str | None:
+    name = run_name.lower()
+    if "docker" not in name:
+        return None
+    if "sgx2" in name:
+        return "SGX2"
+    if "sgx" in name:
+        return "SGX1"
+    return None
+
+
+def epc_paging_operations(run_summary: dict[str, Any]) -> float | None:
+    run_dir = Path(str(run_summary["run_dir"]))
+    metadata_path = run_dir / "metadata.json"
+    epc_path = run_dir / "epc" / "sgx_epc.csv"
+    if not metadata_path.is_file() or not epc_path.is_file():
+        return None
+
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    monitor = metadata.get("sgx_epc_monitor", {})
+    offset_ns = parse_int(monitor.get("monotonic_to_realtime_offset_ns"))
+    client_start_ns = parse_int(
+        metadata.get("processes", {}).get("client", {}).get("started_ns")
+    )
+    duration_s = parse_float(metadata.get("parameters", {}).get("duration_s"))
+    if offset_ns is None or client_start_ns is None or not duration_s:
+        return None
+
+    samples: list[tuple[int, int, int]] = []
+    with epc_path.open(newline="", encoding="utf-8") as handle:
+        for row in csv.DictReader(handle):
+            timestamp_ns = parse_int(row.get("timestamp_monotonic_ns"))
+            ewb = parse_int(row.get("ewb_success_total"))
+            eldu = parse_int(row.get("eldu_success_total"))
+            if timestamp_ns is not None and ewb is not None and eldu is not None:
+                samples.append((timestamp_ns + offset_ns, ewb, eldu))
+
+    client_end_ns = client_start_ns + round(duration_s * 1e9)
+    start = next((sample for sample in reversed(samples) if sample[0] <= client_start_ns), None)
+    end = next((sample for sample in reversed(samples) if sample[0] <= client_end_ns), None)
+    if start is None or end is None or end[0] <= start[0]:
+        return None
+
+    ewb_delta = end[1] - start[1]
+    eldu_delta = end[2] - start[2]
+    if ewb_delta < 0 or eldu_delta < 0:
+        return None
+    return float(ewb_delta + eldu_delta)
+
+
+def plot_epc_scalability(
+    run_summaries: list[dict[str, Any]], output_dir: Path,
+) -> list[Path]:
+    clients = (1, 5, 10, 20, 30, 40)
+    platforms = ("SGX1", "SGX2")
+    workloads = {
+        "closed": (0.0, "P7c-client-scalability-epc-closed.pdf"),
+        "fixed": (10.0, "P7d-client-scalability-epc-fixed.pdf"),
+    }
+    values: dict[tuple[str, str, int], list[float]] = {}
+
+    for summary in run_summaries:
+        platform = epc_platform(Path(str(summary.get("run_dir", ""))).name)
+        client_count = parse_int(summary.get("clients"))
+        rate = parse_float(summary.get("rate"))
+        if (
+            platform is None
+            or client_count not in clients
+            or rate is None
+            or bool(summary.get("run_failed"))
+        ):
+            continue
+        workload = next(
+            (name for name, (target, _) in workloads.items() if math.isclose(rate, target)),
+            None,
+        )
+        if workload is None:
+            continue
+        paging = epc_paging_operations(summary)
+        if paging is not None:
+            values.setdefault((workload, platform, client_count), []).append(paging)
+
+    if not values:
+        return []
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    paths: list[Path] = []
+    bar_width = 0.9075
+    offsets = {"SGX1": -0.45, "SGX2": 0.45}
+    styles = {
+        "SGX1": {"color": STRATEGY_COLORS["docker_sgx"], "hatch": None},
+        "SGX2": {"color": "white", "hatch": "///"},
+    }
+    maximum = max(
+        mean(point) + confidence_interval_95(point)
+        for point in values.values()
+        if point
+    )
+
+    for workload, (_, filename) in workloads.items():
+        path = output_dir / filename
+        with plt.rc_context(PAPER_FONT_CONTEXT):
+            fig, ax = plt.subplots(figsize=PAPER_FIGURE_SIZE)
+            for platform in platforms:
+                platform_values = [values.get((workload, platform, client), []) for client in clients]
+                heights = [mean(point) if point else 0.0 for point in platform_values]
+                errors = [confidence_interval_95(point) if point else 0.0 for point in platform_values]
+                xs = [client + offsets[platform] for client in clients]
+                style = styles[platform]
+                ax.bar(
+                    xs,
+                    heights,
+                    width=bar_width,
+                    yerr=errors,
+                    color=style["color"],
+                    edgecolor=STRATEGY_COLORS["docker_sgx"],
+                    hatch=style["hatch"],
+                    linewidth=0.9,
+                    capsize=3,
+                    label=platform,
+                )
+                for x, point, height in zip(xs, platform_values, heights):
+                    if not point or height == 0:
+                        ax.text(
+                            x,
+                            0.015,
+                            "N/A" if not point else "0",
+                            transform=ax.get_xaxis_transform(),
+                            ha="center",
+                            va="bottom",
+                            fontsize=8,
+                            color="dimgray",
+                            rotation=90,
+                        )
+
+            ax.set_xlabel("Persistent connections")
+            ax.set_xticks(clients)
+            ax.set_xticklabels([str(client) for client in clients])
+            ax.set_xlim(0, max(clients) + 2)
+            ax.set_ylabel("EPC page evictions and reloads")
+            ax.set_ylim(0, max(4.5e6, maximum * 1.05))
+            ax.yaxis.set_major_formatter(
+                FuncFormatter(lambda value, _: "0" if value == 0 else f"{value / 1e6:g}M")
+            )
+            ax.grid(True, axis="y", alpha=0.25)
+            ax.legend(
+                loc="upper right",
+                ncol=1,
+                handlelength=1.0,
+                handletextpad=0.3,
+            )
+            fig.subplots_adjust(**PAPER_PANEL_ADJUST)
+            ax.set_position(
+                [
+                    PAPER_PANEL_ADJUST["left"],
+                    PAPER_PANEL_ADJUST["bottom"],
+                    PAPER_PANEL_ADJUST["right"] - PAPER_PANEL_ADJUST["left"],
+                    PAPER_PANEL_ADJUST["top"] - PAPER_PANEL_ADJUST["bottom"],
+                ]
+            )
+            fig.savefig(path)
+            plt.close(fig)
+        paths.append(path)
+
+    return paths
+
+
 def aggregate_scalability_metric(
     summary_rows: list[dict[str, Any]],
     strategy: str,
@@ -4233,6 +4400,7 @@ def main() -> None:
     aggregate_scalability_paths = plot_aggregate_scalability(
         scalability_rows, out_dir / "P7-client-scalability.pdf"
     )
+    epc_scalability_paths = plot_epc_scalability(run_summaries, out_dir)
     resource_table_path = out_dir / "analysis-resource-summary.tex"
     wrote_resource_table = write_resource_summary_latex(summary_rows, resource_table_path)
     component_table_path = out_dir / "T3-component-costs.tex"
@@ -4283,6 +4451,8 @@ def main() -> None:
     for path in dissection_paths:
         print(f"[PLOT] wrote {path}")
     for path in aggregate_scalability_paths:
+        print(f"[PLOT] wrote {path}")
+    for path in epc_scalability_paths:
         print(f"[PLOT] wrote {path}")
     for filename in (
         "analysis-request-offered-achieved.pdf",

@@ -17,7 +17,7 @@ if [[ ! -x "$CUSTOM_GO" ]]; then
     exit 1
 fi
 
-if [[ ! -x "$SGX_GO" ]]; then
+if [[ "${1:-all}" != certserver && ! -x "$SGX_GO" ]]; then
     echo "SGX Go not found or not executable: $SGX_GO" >&2
     echo "Set SGX_GOROOT to the go-sgx-mod copy, or build /home/bonsai/go-sgx-mod first." >&2
     exit 1
@@ -43,10 +43,10 @@ require_command() {
 
 common_tags=(trace)
 case "${1:-all}" in
-    all|middleboxHandler|handler|full|emptyHandler|empty|emptyhandler)
+    all|middleboxHandler|handler|full|emptyHandler|empty|emptyhandler|certserver)
         ;;
     *)
-        echo "Usage: $0 [all|middleboxHandler|emptyHandler]"
+        echo "Usage: $0 [all|middleboxHandler|emptyHandler|certserver]"
         exit 1
     ;;
 esac
@@ -74,6 +74,20 @@ build() {
     )
     echo "[COMPILE] OK: $output_path"
 }
+
+build_certserver() {
+    require_command cmake
+    cmake -S "$SCRIPT_DIR/cmd/certserver" -B "$SCRIPT_DIR/build/quoteverify" \
+        -DDCAP_SOURCE="${DCAP_SOURCE:-$HOME/linux-sgx/external/dcap_source}" \
+        -DCMAKE_BUILD_TYPE=Release
+    cmake --build "$SCRIPT_DIR/build/quoteverify" --parallel 4
+    CGO_ENABLED=1 build "certserver" "cmd/certserver" "$SCRIPT_DIR/certserver" "${certserver_build_args[@]}"
+}
+
+if [[ "${1:-all}" == certserver ]]; then
+    build_certserver
+    exit 0
+fi
 
 generate_or_find_enclave_key() {
     if [[ -f "$ENCLAVE_KEY" ]]; then
@@ -161,7 +175,7 @@ build_docker_images() {
     cd "$SCRIPT_DIR"
     use_go_toolchain "$CUSTOM_GOROOT"
     build "client" "cmd/client" "$SCRIPT_DIR/client" "${common_build_args[@]}"
-    build "certserver" "cmd/certserver" "$SCRIPT_DIR/certserver" "${certserver_build_args[@]}"
+    build_certserver
     build "appserver" "cmd/appserver" "$SCRIPT_DIR/appserver" "${common_build_args[@]}"
     build "middlebox" "cmd/middlebox" "$SCRIPT_DIR/middlebox" "${middlebox_build_args[@]}"
     build "middlebox_emptyhandler" "cmd/middlebox" "$SCRIPT_DIR/middlebox_emptyhandler" "${middlebox_empty_build_args[@]}"

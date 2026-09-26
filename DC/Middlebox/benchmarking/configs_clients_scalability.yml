@@ -8,6 +8,9 @@ campaign:
   cooldown_s: 10
   readiness_timeout_s: 30
   cpu_interval_s: 0.2
+  # Optional SGX EPC paging instrumentation; excluded from canonical runs.
+  # sgx_epc_monitor_enabled: true
+  # sgx_epc_interval_ms: 1000
   trace_buffer_events: 100000
   trace_drop_on_full: true
 
