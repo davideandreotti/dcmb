@@ -1,33 +1,9 @@
-# FROM ubuntu:22.04
 FROM debian:bookworm-slim
-
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-
-# # Scarica una versione bootstrap di Go (serve per compilare cfgo)
-# RUN curl -L https://go.dev/dl/go1.21.1.linux-amd64.tar.gz -o /tmp/go-bootstrap.tar.gz \
-#     && tar -C /usr/local -xzf /tmp/go-bootstrap.tar.gz
-
-# ENV PATH=$PATH:/usr/local/go/bin
-
-# ENV GOROOT_BOOTSTRAP=/usr/local/go
-
-# # Copia la Go modificata del professore dal repository
-# COPY DC/go /root/go
-
-# WORKDIR /root/go/src
-# RUN ./make.bash
-
-# # Aggiorna il PATH per usare cfgo
-# ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/root/go/bin
-
-# RUN python3 -m pip install --user requests
-
-# Copia il codice middlebox usato come backend operator
-# WORKDIR /certs
 WORKDIR /app
 
 ARG MIDDLEBOX_BINARY=middlebox
@@ -39,21 +15,9 @@ RUN chmod +x /app/middlebox
 RUN mkdir -p /home/bonsai/dcmb/certs_external
 COPY certs_external/ /home/bonsai/dcmb/certs_external/
 
-# COPY DC/Middlebox/middleboxHandler.go .
-# COPY DC/Middlebox/messageTypes.go .
-# COPY DC/Middlebox/go.mod .
-# COPY DC/Middlebox/go.sum .
-
-# # Build del middlebox backend (binario chiamato operator per compatibilita con docker-stack.yml)
-# RUN /root/go/bin/go mod tidy && GOOS=linux GOARCH=amd64 /root/go/bin/go build -o operator middlebox.go middleboxHandler.go messageTypes.go
-
-# Variabili d'ambiente di default (sovrascrivibili nel docker-stack.yml)
-#   OPERATOR_MODE         cold | warm | auth   (default: warm)
-#   OPERATOR_ID           nome identificativo  (default: operator_1)
-#   OPERATOR_DEFAULT_SNI  SNI per pre-warm auth (default: vuoto → rimandato al primo /assign)
+# Runtime defaults can be overridden when the container is started.
 ENV OPERATOR_MODE=warm
 ENV OPERATOR_ID=operator_1
 ENV OPERATOR_DEFAULT_SNI=
 
-# Comando di avvio
 ENTRYPOINT ["/app/middlebox", "-log_level", "debug", "-minimal_logs=false"]

@@ -20,8 +20,8 @@ the bare-metal paths can be built and exercised independently.
 | `DC/Middlebox/` | DCMB services, containers, experiment controller, and plotting |
 | `DC/go/` | Custom Go toolchain with delegated-credential support |
 | `ETSI/` | TLMSP configuration, policy components, and benchmarks |
-| `PerformanceMeasuring/` | Supporting request and certificate services |
 | `certs_external/` | Local certificate generator; generated keys are ignored |
+| `docs/` | Historical sequence diagrams and retained request examples |
 
 The paper-output inventory is in
 [`DC/Middlebox/PAPER_FIGURES_MEMO.md`](DC/Middlebox/PAPER_FIGURES_MEMO.md).
@@ -89,11 +89,12 @@ middlebox once from `DC/Middlebox` with internet access to create or refresh the
 root cache before building container images, which copy that file into the
 worker image.
 
-The benchmark controller requires Python 3 and PyYAML. Plotting additionally
-requires Matplotlib:
+Install Python 3.9 or newer and the dependencies used by the benchmark
+controller, plotting tools, and retained TLMSP utilities from the repository
+root:
 
 ```bash
-python3 -m pip install pyyaml matplotlib
+python3 -m pip install -r requirements.txt
 ```
 
 Before running a campaign, edit its host addresses and working directories for

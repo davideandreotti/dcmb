@@ -9,9 +9,6 @@
 /OAuthTokenGetter/secrets.js
 /OAuthTokenGetter/refresh_token.txt
 /DC/go-compiled.tar
-/PerformanceMeasuring/**/*.res
-/PerformanceMeasuring/*/
-/PerformanceMeasuring/*.png
 /DC/Middlebox/*.dat
 /DC/Middlebox/cmd/middlebox/jwks.dat
 /DC/Middlebox/stderr.txt
@@ -61,8 +58,6 @@ go.sum
 /DC/Middlebox/enclave-key.pem
 /DC/Middlebox/build/
 /DC/old/go/
-/PerformanceMeasuring/go/
-/DC/Middlebox/build/
 kubectl
 kubectl.sha256
 

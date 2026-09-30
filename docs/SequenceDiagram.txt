@@ -53,4 +53,3 @@ Server (8000) -->>Middlebox: HTTP 200 + body
 Middlebox-->>Client: HTTP 200 + body
 note over Client: t10 response observed
 
-
