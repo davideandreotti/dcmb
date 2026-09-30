@@ -46,10 +46,10 @@ client:
     - "Content-Type: application/json"
     - "X-Testing: 1"
   # Fresh uses this semaphore; resumption uses the 10 logical clients below.
-  max_in_flight: 1024
+  max_in_flight: 10
 
 client_matrix:
-  modes: [fresh] #, resumption]
+  modes: [fresh, resumption]
   # In fresh mode this value labels the fixed-concurrency experiment; actual
   # concurrency is enforced by max_in_flight above. In resumption mode it is
   # also the real number of logical clients.
@@ -59,41 +59,41 @@ client_matrix:
     # [1, 2, 3, 4, 5, 10, 25, 50, 100, 250, 500, 750, 1000, 1250,
     #  1500, 2000, 3000, 4000, 5000]. Final rates are deployment-specific.
     fresh: [1]
-    # resumption: [1]
+    resumption: [1]
 
 deployments:
-  # - name: direct
-  #   kind: direct
-  #   modes: [fresh]
-  #   rates: [3000, 4000, 5000]
+  - name: direct
+    kind: direct
+    modes: [fresh]
+    rates: [3000, 4000, 5000]
 
-  # - name: baremetal_full_reuse
-  #   kind: baremetal
-  #   modes: [fresh]
-  #   rates: [1500, 2000, 3000, 4000]
-  #   command: ["./middlebox", "-log_level", "error", "-reuse_dc=true"]
+  - name: baremetal_full_reuse
+    kind: baremetal
+    modes: [fresh]
+    rates: [1500, 2000, 3000, 4000]
+    command: ["./middlebox", "-log_level", "error", "-reuse_dc=true"]
 
-  # - name: sgx_full_reuse
-  #   kind: gramine_sgx
-  #   modes: [fresh]
-  #   rates: [100, 250, 500, 750]
-  #   command: ["gramine-sgx", "middlebox", "-log_level", "error", "-reuse_dc=true"]
-  #   env:
-  #     MBX_EMIT_QUOTE: "1"
+  - name: sgx_full_reuse
+    kind: gramine_sgx
+    modes: [fresh]
+    rates: [100, 250, 500, 750]
+    command: ["gramine-sgx", "middlebox", "-log_level", "error", "-reuse_dc=true"]
+    env:
+      MBX_EMIT_QUOTE: "1"
 
-  # - name: docker_full_noreuse
-  #   kind: docker_gateway
-  #   modes: [fresh]
-  #   rates: [2, 3, 4, 5]
-  #   prewarm_for_clients: true
-  #   pool_readiness_timeout_s: 120
-  #   worker_image: dcmiddlebox-worker:baseline
-  #   worker_reuse_dc: false
-  #   min_ready: 10
-  #   scale_up_by: 10
-  #   container_stats_scope: all
-  #   container_stats_collector: auto
-  #   worker_trace_enabled: false
+  - name: docker_full_noreuse
+    kind: docker_gateway
+    modes: [fresh]
+    rates: [2, 3, 4, 5]
+    prewarm_for_clients: true
+    pool_readiness_timeout_s: 120
+    worker_image: dcmiddlebox-worker:baseline
+    worker_reuse_dc: false
+    min_ready: 10
+    scale_up_by: 10
+    container_stats_scope: all
+    container_stats_collector: auto
+    worker_trace_enabled: false
 
   - name: docker_sgxgo_full_noreuse
     kind: docker_gateway
@@ -111,34 +111,34 @@ deployments:
     container_stats_collector: auto
     worker_trace_enabled: false
 
-  # - name: docker_full_resumption
-  #   kind: docker_gateway
-  #   modes: [resumption]
-  #   rates: [1250, 1500, 2000, 3000]
-  #   prewarm_for_clients: true
-  #   pool_readiness_timeout_s: 120
-  #   worker_image: dcmiddlebox-worker:baseline
-  #   worker_reuse_dc: false
-  #   ticket_identity_key: dcmb-handshake-capacity
-  #   min_ready: 10
-  #   scale_up_by: 10
-  #   container_stats_scope: all
-  #   container_stats_collector: auto
-  #   worker_trace_enabled: false
+  - name: docker_full_resumption
+    kind: docker_gateway
+    modes: [resumption]
+    rates: [1250, 1500, 2000, 3000]
+    prewarm_for_clients: true
+    pool_readiness_timeout_s: 120
+    worker_image: dcmiddlebox-worker:baseline
+    worker_reuse_dc: false
+    ticket_identity_key: dcmb-handshake-capacity
+    min_ready: 10
+    scale_up_by: 10
+    container_stats_scope: all
+    container_stats_collector: auto
+    worker_trace_enabled: false
 
-  # - name: docker_sgxgo_full_resumption
-  #   kind: docker_gateway
-  #   modes: [resumption]
-  #   rates: [125, 250, 500, 750]
-  #   prewarm_for_clients: true
-  #   pool_readiness_timeout_s: 180
-  #   worker_image: dcmiddlebox-worker:sgxgo
-  #   worker_reuse_dc: true
-  #   worker_sgx_enabled: true
-  #   worker_emit_quote: "1"
-  #   ticket_identity_key: dcmb-handshake-capacity
-  #   min_ready: 10
-  #   scale_up_by: 10
-  #   container_stats_scope: all
-  #   container_stats_collector: auto
-  #   worker_trace_enabled: false
+  - name: docker_sgxgo_full_resumption
+    kind: docker_gateway
+    modes: [resumption]
+    rates: [125, 250, 500, 750]
+    prewarm_for_clients: true
+    pool_readiness_timeout_s: 180
+    worker_image: dcmiddlebox-worker:sgxgo
+    worker_reuse_dc: true
+    worker_sgx_enabled: true
+    worker_emit_quote: "1"
+    ticket_identity_key: dcmb-handshake-capacity
+    min_ready: 10
+    scale_up_by: 10
+    container_stats_scope: all
+    container_stats_collector: auto
+    worker_trace_enabled: false

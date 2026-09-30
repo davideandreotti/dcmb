@@ -5,6 +5,13 @@ This directory provides a bare-metal TLMSP benchmark path for
 self-managed fixed-duration campaign, and emit standalone CSV files that the DCMB
 plotter can discover after they are copied below a DC campaign.
 
+The commands below use one portable repository variable. Set it once in the
+shell that will build or run TLMSP:
+
+```bash
+export DCMB_ROOT=/path/to/dcmb
+```
+
 ## Profiles
 
 `full` uses `Configurations/local_init.ucl` and invokes
@@ -24,7 +31,7 @@ Rebuild and install `tlmsp-tools` after changing the middlebox or shared demo
 code:
 
 ```bash
-cd /home/bonsai/dcmb/ETSI/TLMSP/tlmsp-tools
+cd "$DCMB_ROOT/ETSI/TLMSP/tlmsp-tools"
 make -j20
 make install
 ```
@@ -32,7 +39,7 @@ make install
 Rebuild and install patched curl after changing its source:
 
 ```bash
-cd /home/bonsai/dcmb/ETSI/TLMSP/tlmsp-curl
+cd "$DCMB_ROOT/ETSI/TLMSP/tlmsp-curl"
 make -j20
 make install
 ```
@@ -40,12 +47,12 @@ make install
 If the curl source tree has no `Makefile`, configure it once first:
 
 ```bash
-cd /home/bonsai/dcmb/ETSI/TLMSP/tlmsp-curl
+cd "$DCMB_ROOT/ETSI/TLMSP/tlmsp-curl"
 ./buildconf
 ./configure \
-  --prefix=/home/bonsai/dcmb/.tlmsp \
-  --with-ssl=/home/bonsai/dcmb/.tlmsp \
-  --with-tlmsp-tools=/home/bonsai/dcmb/.tlmsp \
+  --prefix="$DCMB_ROOT/.tlmsp" \
+  --with-ssl="$DCMB_ROOT/.tlmsp" \
+  --with-tlmsp-tools="$DCMB_ROOT/.tlmsp" \
   --disable-silent-rules
 make -j20
 make install
@@ -58,7 +65,7 @@ must also be rebuilt.
 Build the unified benchmark load generator:
 
 ```bash
-cd /home/bonsai/dcmb/ETSI/Benchmarking
+cd "$DCMB_ROOT/ETSI/Benchmarking"
 make
 ```
 
@@ -66,9 +73,9 @@ The Go application server must include plaintext support. Rebuild it after
 changing `cmd/appserver`:
 
 ```bash
-cd /home/bonsai/dcmb/DC/Middlebox
-GOROOT=/home/bonsai/dcmb/DC/go \
-PATH=/home/bonsai/dcmb/DC/go/bin:$PATH \
+cd "$DCMB_ROOT/DC/Middlebox"
+GOROOT="$DCMB_ROOT/DC/go" \
+PATH="$DCMB_ROOT/DC/go/bin:$PATH" \
 GOTOOLCHAIN=local \
 go build -tags trace -o appserver ./cmd/appserver
 ```
@@ -78,21 +85,21 @@ go build -tags trace -o appserver ./cmd/appserver
 Run each component in its own terminal. Start the plaintext application:
 
 ```bash
-cd /home/bonsai/dcmb/DC/Middlebox
+cd "$DCMB_ROOT/DC/Middlebox"
 ./appserver -addr 127.0.0.1:7000 -tls=false -log_level error
 ```
 
 Start TLMSP-enabled Apache:
 
 ```bash
-. /home/bonsai/dcmb/.tlmsp/share/tlmsp-tools/tlmsp-env.sh
-/home/bonsai/dcmb/.tlmsp/bin/httpd -X -e warn
+. "$DCMB_ROOT/.tlmsp/share/tlmsp-tools/tlmsp-env.sh"
+"$DCMB_ROOT/.tlmsp/bin/httpd" -X -e warn
 ```
 
 For the Full profile, start the policy listener:
 
 ```bash
-cd /home/bonsai/dcmb/ETSI/NewMiddlebox
+cd "$DCMB_ROOT/ETSI/NewMiddlebox"
 ./listener
 ```
 
@@ -100,18 +107,18 @@ Then start the Full middlebox from `NewMiddlebox`, because its UCL handler is
 `./client`:
 
 ```bash
-. /home/bonsai/dcmb/.tlmsp/share/tlmsp-tools/tlmsp-env.sh
-cd /home/bonsai/dcmb/ETSI/NewMiddlebox
+. "$DCMB_ROOT/.tlmsp/share/tlmsp-tools/tlmsp-env.sh"
+cd "$DCMB_ROOT/ETSI/NewMiddlebox"
 rm -f waiting.dat
-TLMSP_BENCH_TRACE=1 /home/bonsai/dcmb/.tlmsp/bin/tlmsp-mb \
-  -c /home/bonsai/dcmb/ETSI/Configurations/local_init.ucl -a \
+TLMSP_BENCH_TRACE=1 "$DCMB_ROOT/.tlmsp/bin/tlmsp-mb" \
+  -c "$DCMB_ROOT/ETSI/Configurations/local_init.ucl" -a \
   2> >(tee /tmp/tlmsp-middlebox.events.log >&2)
 ```
 
 For No-handler, omit the listener and replace the config with:
 
 ```text
-/home/bonsai/dcmb/ETSI/Configurations/local_init_no_handler.ucl
+$DCMB_ROOT/ETSI/Configurations/local_init_no_handler.ucl
 ```
 
 ## Manual Smoke Tests
@@ -119,7 +126,7 @@ For No-handler, omit the listener and replace the config with:
 With the deployment running, collect two fresh requests:
 
 ```bash
-cd /home/bonsai/dcmb/ETSI/Benchmarking
+cd "$DCMB_ROOT/ETSI/Benchmarking"
 ./run_latency.py fresh \
   --warmup 0 --samples 2 --interval-ms 100 \
   --middlebox-log /tmp/tlmsp-middlebox.events.log \
@@ -152,7 +159,7 @@ and current measurements.
 Run the DC-aligned latency campaign for Full and No-handler:
 
 ```bash
-cd /home/bonsai/dcmb/ETSI/Benchmarking
+cd "$DCMB_ROOT/ETSI/Benchmarking"
 ./run_campaign.py latency \
   --runs 5 --duration-seconds 60 \
   --output-dir results/tlmsp_latency
@@ -263,7 +270,7 @@ The existing plotting command discovers them automatically; there is no TLMSP
 command-line option:
 
 ```bash
-cd /home/bonsai/dcmb/DC/Middlebox
+cd "$DCMB_ROOT/DC/Middlebox"
 python3 benchmarking/plot_latency.py experiments/<dc-campaign>
 ```
 

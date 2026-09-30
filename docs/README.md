@@ -2,7 +2,8 @@
 
 This directory contains request examples and sequence diagrams retained from
 earlier DCMB experiments. The active experiment controller and implementation
-are documented in the repository root and under `DC/Middlebox`.
+are documented in the repository root and in
+[`DC/Middlebox/README.md`](../DC/Middlebox/README.md).
 
 - `SequenceDiagram.txt` describes the direct client, middlebox, certificate
   server, and application-server flow.

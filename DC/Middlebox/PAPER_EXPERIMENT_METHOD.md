@@ -6,7 +6,10 @@ filtered, what each paper artifact contains, and why those choices were made.
 Implementation status and filenames are tracked separately in
 `PAPER_FIGURES_MEMO.md`.
 
-The description matches the code and YAML files as of 2026-08-01. Final paper
+Build controls, executable roles, YAML settings, and the controller lifecycle
+are documented in `README.md`.
+
+The description matches the code and YAML files as of 2026-09-30. Final paper
 runs must preserve their copied `campaign.yml`, `metadata.json`, raw traces,
 resource CSVs, and controller `summary.csv`; those files take precedence over
 this document if a later campaign changes a parameter.
@@ -91,7 +94,7 @@ Before the experiments, CPU performance mode was applied with the repository
 script:
 
 ```bash
-cd /home/bonsai/dcmb
+cd /path/to/dcmb
 sudo ./scripts/cpu-performance-mode.sh on
 ./scripts/cpu-performance-mode.sh status
 ```
@@ -372,7 +375,7 @@ different questions and should be described separately.
 | Table | Contents and treatment |
 |---|---|
 | T1 `T1-selected-load-resources.tex` | Mean/p95 middlebox CPU and median/peak memory for one persistent client at 10 and 100 requests/s. Direct is N/A. |
-| T2 `T2-clients-memory.tex` | p99-filtered mean CPU and p99 middlebox memory at aggregate 10 requests/s for `1, 10, 30, 50` persistent clients. |
+| T2 `T2-clients-memory.tex` | p99-filtered mean CPU and p99 middlebox memory at aggregate 10 requests/s for `1, 10, 30, 40` persistent clients. |
 | T3 `T3-component-costs.tex` | Mean request/response validation, quote generation/verification, DC generation, worker creation, and SGX process-startup costs. Each run contributes one mean and multiple runs produce a 95% confidence interval; missing measurements remain `--`. |
 | T4 `T4-handshake-capacity.tex` | Fixed-10-concurrency full/resumed handshake capacity. Reports the highest all-runs-usable rate and the next failed tested rate as a bracket, achieved handshakes/s, mean handshake latency, and run count. |
 
@@ -416,7 +419,7 @@ Before a final campaign:
 3. Build all trace-enabled artifacts and the startup-only standard SGX image:
 
    ```bash
-   cd /home/bonsai/dcmb/DC/Middlebox
+   cd DC/Middlebox
    BUILD_STARTUP_IMAGE=1 ./compile.sh
    ```
 

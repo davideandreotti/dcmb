@@ -17,7 +17,7 @@ the bare-metal paths can be built and exercised independently.
 
 | Path | Purpose |
 | --- | --- |
-| `DC/Middlebox/` | DCMB services, containers, experiment controller, and plotting |
+| `DC/Middlebox/` | DCMB services, containers, experiment controller, and plotting; see its [README](DC/Middlebox/README.md) |
 | `DC/go/` | Custom Go toolchain with delegated-credential support |
 | `ETSI/` | TLMSP configuration, policy components, and benchmarks |
 | `certs_external/` | Local certificate generator; generated keys are ignored |
@@ -25,6 +25,13 @@ the bare-metal paths can be built and exercised independently.
 
 The paper-output inventory is in
 [`DC/Middlebox/PAPER_FIGURES_MEMO.md`](DC/Middlebox/PAPER_FIGURES_MEMO.md).
+
+Component documentation:
+
+- [DCMB build, runtime, and benchmark configuration](DC/Middlebox/README.md)
+- [TLMSP implementation](ETSI/README.md) and [benchmarking](ETSI/Benchmarking/README.md)
+- [Local certificate generation](certs_external/README.md)
+- [Historical diagrams and request examples](docs/README.md)
 
 ## Initial setup
 
@@ -66,6 +73,10 @@ cd DC/Middlebox
 ./compile.sh
 ```
 
+Build controls, generated artifacts, component flags, campaign YAML settings,
+and the controller lifecycle are documented in
+[`DC/Middlebox/README.md`](DC/Middlebox/README.md).
+
 It expects the custom `DC/go` toolchain, an SGX-Go toolchain selected through
 `SGX_GOROOT`, Gramine commands, an enclave signing key, and Docker. For a
 bare-metal-only build, use the custom Go toolchain directly:
@@ -97,12 +108,13 @@ root:
 python3 -m pip install -r requirements.txt
 ```
 
-Before running a campaign, edit its host addresses and working directories for
+Before running a campaign, copy a canonical definition to an ignored local
+`configs*.yml` file and adapt its host addresses and working directories for
 the target machine. The five versioned campaign definitions are:
 
 - `benchmarking/configs.yml`: primary single-client paper campaign
 - `benchmarking/configs_clients_scalability.yml`: client scalability
-- `benchmarking/configs_handshake_capacity.yml`: fresh-handshake capacity
+- `benchmarking/configs_handshake_capacity.yml`: fresh and resumed handshake capacity
 - `benchmarking/configs_latency_dissection.yml`: traced latency dissection
 - `benchmarking/configs_startup.yml`: process and worker startup
 

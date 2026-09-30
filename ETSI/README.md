@@ -26,6 +26,9 @@ stack through `ETSI/TLMSP/tlmsp-tools/build/build.sh`, or use the targeted
 rebuild commands in [`Benchmarking/README.md`](Benchmarking/README.md) when
 only `tlmsp-tools` or curl changed.
 
+The benchmark README defines `DCMB_ROOT` once and uses repository-relative
+paths throughout; no checkout-specific absolute path needs to be committed.
+
 Build the Go policy executables with:
 
 ```bash

@@ -3,5 +3,6 @@ PyYAML
 jsonschema
 matplotlib
 networkx
+psutil
 python-dateutil
 requests

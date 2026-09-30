@@ -1,5 +1,14 @@
 # SGX quote verification
 
+Related upstream references:
+
+- [Intel SGX software stack](https://github.com/intel/confidential-computing.sgx)
+- [Intel SGX SDK and sample code](https://github.com/intel/confidential-computing.sgx.sdk/tree/main/SampleCode)
+- [Intel DCAP source](https://github.com/intel/confidential-computing.tee.dcap)
+- [Intel quote-generation sample](https://github.com/intel/confidential-computing.tee.dcap/tree/main/SampleCode/QuoteGenerationSample)
+- [Intel quote-verification sample](https://github.com/intel/confidential-computing.tee.dcap/tree/main/SampleCode/QuoteVerificationSample)
+- [Gramine attestation documentation](https://gramine.readthedocs.io/en/stable/attestation.html)
+
 The certserver uses Intel's granular QVL with authenticated collateral cached per
 process. The first valid quote performs full Intel verification, establishes the
 Intel root of trust and collateral expiration, and validates PCK, TCB and QE
@@ -23,7 +32,7 @@ Requests without attestation retain the existing application behavior.
 From `DC/Middlebox`:
 
 ```sh
-DCAP_SOURCE=/home/bonsai/linux-sgx/external/dcap_source ./compile.sh certserver
+DCAP_SOURCE=/path/to/linux-sgx/external/dcap_source ./compile.sh certserver
 ```
 
 The full `./compile.sh` also builds this verifier. `BUILD_DCAP_VERIFY` defaults to

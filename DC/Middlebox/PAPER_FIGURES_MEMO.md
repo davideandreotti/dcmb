@@ -3,6 +3,7 @@
 The experiment/setup method and exact data-treatment rules are documented in
 `PAPER_EXPERIMENT_METHOD.md`. Use that file when writing the paper's setup and
 methodology sections; this memo remains the concise artifact/status index.
+Build and campaign operation are documented separately in `README.md`.
 
 Current status: plotting and local campaign support are implemented. The final
 latency, throughput, scalability, and handshake YAMLs use five independent
