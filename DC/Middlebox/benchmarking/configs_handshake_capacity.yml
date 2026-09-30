@@ -46,13 +46,13 @@ client:
     - "Content-Type: application/json"
     - "X-Testing: 1"
   # Fresh uses this semaphore; resumption uses the 10 logical clients below.
-  max_in_flight: 10
+  max_in_flight: 1024
 
 client_matrix:
   modes: [fresh, resumption]
-  # In fresh mode this value labels the fixed-concurrency experiment; actual
-  # concurrency is enforced by max_in_flight above. In resumption mode it is
-  # also the real number of logical clients.
+  # In fresh mode this value is only the campaign's client-count label; actual
+  # concurrency is bounded by max_in_flight above. In resumption mode it is the
+  # real number of logical clients.
   clients: [10]
   rates_by_mode:
     # The original exploratory sweep was:

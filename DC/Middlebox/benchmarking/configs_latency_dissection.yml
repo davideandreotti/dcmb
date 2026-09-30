@@ -78,7 +78,6 @@ deployments:
     worker_image: dcmiddlebox-worker:baseline
     worker_reuse_dc: false
     min_ready: 1
-    max_workers: 1
     scale_up_by: 1
     wait_for_full_pool: true
     pool_readiness_timeout_s: 120
@@ -91,7 +90,6 @@ deployments:
     worker_image: dcmiddlebox-worker:baseline
     worker_reuse_dc: true
     min_ready: 1
-    max_workers: 1
     scale_up_by: 1
     wait_for_full_pool: true
     pool_readiness_timeout_s: 120
@@ -106,7 +104,6 @@ deployments:
     ticket_identity_key: dcmb-dissection-resumption
     delete_after_use: false
     min_ready: 1
-    max_workers: 1
     scale_up_by: 1
     wait_for_full_pool: true
     pool_readiness_timeout_s: 120
@@ -120,8 +117,7 @@ deployments:
     worker_reuse_dc: false
     worker_sgx_enabled: true
     worker_emit_quote: "1"
-    min_ready: 2
-    max_workers: 2
+    min_ready: 1
     scale_up_by: 1
     wait_for_full_pool: true
     pool_readiness_timeout_s: 120
@@ -137,7 +133,6 @@ deployments:
     worker_sgx_enabled: true
     worker_emit_quote: "1"
     min_ready: 1
-    max_workers: 1
     scale_up_by: 1
     wait_for_full_pool: true
     pool_readiness_timeout_s: 120
@@ -155,7 +150,6 @@ deployments:
     ticket_identity_key: dcmb-dissection-resumption
     delete_after_use: false
     min_ready: 1
-    max_workers: 1
     scale_up_by: 1
     wait_for_full_pool: true
     pool_readiness_timeout_s: 120
