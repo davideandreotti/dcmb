@@ -1,3 +1,5 @@
+# Canonical methodology; adapt /path/to/dcmb and SERVER_IP in an ignored local copy.
+# Docker is the reference runtime; see docs/native-experiment-handover.md for host setup.
 campaign:
   name: latency_dissection
   output_root: experiments
@@ -12,19 +14,19 @@ campaign:
   trace_drop_on_full: false
 
 hosts:
-  client: {host: localhost, ip: 127.0.0.1, work_dir: /home/bonsai/dcmb/DC/Middlebox}
-  middlebox: {host: localhost, ip: 127.0.0.1, work_dir: /home/bonsai/dcmb/DC/Middlebox}
-  server: {host: localhost, ip: 10.79.1.175, work_dir: /home/bonsai/dcmb/DC/Middlebox}
+  client: {host: localhost, ip: 127.0.0.1, work_dir: /path/to/dcmb/DC/Middlebox}
+  middlebox: {host: localhost, ip: 127.0.0.1, work_dir: /path/to/dcmb/DC/Middlebox}
+  server: {host: localhost, ip: SERVER_IP, work_dir: /path/to/dcmb/DC/Middlebox}
 
 paths:
-  middlebox_dir: /home/bonsai/dcmb/DC/Middlebox
+  middlebox_dir: /path/to/dcmb/DC/Middlebox
 
 server:
-  target_url: https://10.79.1.175:8000
-  cert_url: http://10.79.1.175:5000
+  target_url: https://SERVER_IP:8000
+  cert_url: http://SERVER_IP:5000
   request_path: /function/init
-  certserver_command: ["./certserver", "-log_level", "error"]
-  appserver_command: ["./appserver", "-log_level", "error"]
+  certserver_command: ["./certserver", "-log_level", "error", "-cert-path", "/path/to/dcmb/certs_external/server/cert.pem", "-key-path", "/path/to/dcmb/certs_external/server/key.pem"]
+  appserver_command: ["./appserver", "-log_level", "error", "-cert-path", "/path/to/dcmb/certs_external/server/cert.pem", "-key-path", "/path/to/dcmb/certs_external/server/key.pem"]
 
 client:
   binary: ./client
@@ -53,31 +55,38 @@ deployments:
   - name: baremetal_full_noreuse
     kind: baremetal
     modes: [fresh]
-    command: ["./middlebox", "-log_level", "error", "-reuse_dc=false"]
+    command: ["./middlebox", "-log_level", "error", "-reuse_dc=false", "-ca", "/path/to/dcmb/certs_external/ca.crt"]
 
   - name: baremetal_full_reuse
     kind: baremetal
     modes: [persistent]
-    command: ["./middlebox", "-log_level", "error", "-reuse_dc=true"]
+    command: ["./middlebox", "-log_level", "error", "-reuse_dc=true", "-ca", "/path/to/dcmb/certs_external/ca.crt"]
 
   - name: sgx_full_noreuse
     kind: gramine_sgx
     modes: [fresh]
     command: ["gramine-sgx", "middlebox", "-log_level", "error", "-reuse_dc=false"]
-    env: {MBX_EMIT_QUOTE: "1"}
+    env: {MBX_EMIT_QUOTE: "0"}
 
   - name: sgx_full_reuse
     kind: gramine_sgx
     modes: [persistent]
     command: ["gramine-sgx", "middlebox", "-log_level", "error", "-reuse_dc=true"]
-    env: {MBX_EMIT_QUOTE: "1"}
+    env: {MBX_EMIT_QUOTE: "0"}
 
   - name: docker_full_noreuse
     kind: docker_gateway
+    runtime: docker
+    socket_host: /var/run/docker.sock
+    socket_container: /var/run/docker.sock
+    network: dcmb-middlebox-net
+    worker_certs_host_path: /path/to/dcmb/certs_external
+    worker_certs_container_path: /home/bonsai/dcmb/certs_external
+    worker_ca: /home/bonsai/dcmb/certs_external/ca.crt
     modes: [fresh]
     worker_image: dcmiddlebox-worker:baseline
     worker_reuse_dc: false
-    min_ready: 1
+    min_ready: 2
     scale_up_by: 1
     wait_for_full_pool: true
     pool_readiness_timeout_s: 120
@@ -86,10 +95,17 @@ deployments:
 
   - name: docker_full_reuse
     kind: docker_gateway
+    runtime: docker
+    socket_host: /var/run/docker.sock
+    socket_container: /var/run/docker.sock
+    network: dcmb-middlebox-net
+    worker_certs_host_path: /path/to/dcmb/certs_external
+    worker_certs_container_path: /home/bonsai/dcmb/certs_external
+    worker_ca: /home/bonsai/dcmb/certs_external/ca.crt
     modes: [persistent]
     worker_image: dcmiddlebox-worker:baseline
     worker_reuse_dc: true
-    min_ready: 1
+    min_ready: 2
     scale_up_by: 1
     wait_for_full_pool: true
     pool_readiness_timeout_s: 120
@@ -98,12 +114,19 @@ deployments:
 
   - name: docker_full_resumption
     kind: docker_gateway
+    runtime: docker
+    socket_host: /var/run/docker.sock
+    socket_container: /var/run/docker.sock
+    network: dcmb-middlebox-net
+    worker_certs_host_path: /path/to/dcmb/certs_external
+    worker_certs_container_path: /home/bonsai/dcmb/certs_external
+    worker_ca: /home/bonsai/dcmb/certs_external/ca.crt
     modes: [resumption]
     worker_image: dcmiddlebox-worker:baseline
     worker_reuse_dc: false
     ticket_identity_key: dcmb-dissection-resumption
     delete_after_use: false
-    min_ready: 1
+    min_ready: 2
     scale_up_by: 1
     wait_for_full_pool: true
     pool_readiness_timeout_s: 120
@@ -112,12 +135,19 @@ deployments:
 
   - name: docker_sgxgo_full_noreuse
     kind: docker_gateway
+    runtime: docker
+    socket_host: /var/run/docker.sock
+    socket_container: /var/run/docker.sock
+    network: dcmb-middlebox-net
+    worker_certs_host_path: /path/to/dcmb/certs_external
+    worker_certs_container_path: /home/bonsai/dcmb/certs_external
+    worker_ca: /home/bonsai/dcmb/certs_external/ca.crt
     modes: [fresh]
     worker_image: dcmiddlebox-worker:sgxgo
     worker_reuse_dc: false
     worker_sgx_enabled: true
-    worker_emit_quote: "1"
-    min_ready: 1
+    worker_emit_quote: "0"
+    min_ready: 2
     scale_up_by: 1
     wait_for_full_pool: true
     pool_readiness_timeout_s: 120
@@ -127,12 +157,19 @@ deployments:
 
   - name: docker_sgxgo_full_reuse
     kind: docker_gateway
+    runtime: docker
+    socket_host: /var/run/docker.sock
+    socket_container: /var/run/docker.sock
+    network: dcmb-middlebox-net
+    worker_certs_host_path: /path/to/dcmb/certs_external
+    worker_certs_container_path: /home/bonsai/dcmb/certs_external
+    worker_ca: /home/bonsai/dcmb/certs_external/ca.crt
     modes: [persistent]
     worker_image: dcmiddlebox-worker:sgxgo
     worker_reuse_dc: true
     worker_sgx_enabled: true
-    worker_emit_quote: "1"
-    min_ready: 1
+    worker_emit_quote: "0"
+    min_ready: 2
     scale_up_by: 1
     wait_for_full_pool: true
     pool_readiness_timeout_s: 120
@@ -142,14 +179,21 @@ deployments:
 
   - name: docker_sgxgo_full_resumption
     kind: docker_gateway
+    runtime: docker
+    socket_host: /var/run/docker.sock
+    socket_container: /var/run/docker.sock
+    network: dcmb-middlebox-net
+    worker_certs_host_path: /path/to/dcmb/certs_external
+    worker_certs_container_path: /home/bonsai/dcmb/certs_external
+    worker_ca: /home/bonsai/dcmb/certs_external/ca.crt
     modes: [resumption]
     worker_image: dcmiddlebox-worker:sgxgo
     worker_reuse_dc: false
     worker_sgx_enabled: true
-    worker_emit_quote: "1"
+    worker_emit_quote: "0"
     ticket_identity_key: dcmb-dissection-resumption
     delete_after_use: false
-    min_ready: 1
+    min_ready: 2
     scale_up_by: 1
     wait_for_full_pool: true
     pool_readiness_timeout_s: 120

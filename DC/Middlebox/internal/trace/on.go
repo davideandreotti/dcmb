@@ -5,6 +5,7 @@ package trace
 import (
 	"bufio"
 	"encoding/binary"
+	"io"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -40,18 +41,28 @@ func Start(path string, bufferEvents int, dropOnFull bool) error {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if enabled.Load() {
+	if writer != nil {
 		return nil
 	}
 
-	f, err := os.Create(path)
-	if err != nil {
-		return err
+	var sink io.Writer = io.Discard
+	if path != "buffers" {
+		f, err := os.Create(path)
+		if err != nil {
+			return err
+		}
+		out = f
+		sink = f
 	}
 
-	out = f
-	writer = bufio.NewWriterSize(f, 1<<20)
+	writer = bufio.NewWriterSize(sink, 1<<20)
 	events = make(chan event, bufferEvents)
+	if path == "buffers" {
+		// Retain the recording allocations, but leave Mark disabled and do not
+		// open a file or start a writer. No completion channel is needed.
+		done = nil
+		return nil
+	}
 	done = make(chan struct{})
 	drop = dropOnFull
 
@@ -59,7 +70,7 @@ func Start(path string, bufferEvents int, dropOnFull bool) error {
 	copy(header[:4], []byte(magic))
 	binary.LittleEndian.PutUint64(header[4:12], uint64(time.Now().UnixNano()))
 	if _, err := writer.Write(header); err != nil {
-		_ = f.Close()
+		_ = out.Close()
 		out = nil
 		writer = nil
 		events = nil
@@ -93,6 +104,11 @@ func Mark(code uint32, id string, arg uint64) {
 
 func Stop() {
 	if !enabled.Load() {
+		mu.Lock()
+		if writer != nil && out == nil { // Buffer-only startup has no writer to wait for.
+			writer, events, done = nil, nil, nil
+		}
+		mu.Unlock()
 		return
 	}
 

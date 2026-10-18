@@ -1,3 +1,5 @@
+# Canonical methodology; adapt /path/to/dcmb and SERVER_IP in an ignored local copy.
+# Docker is the reference runtime; see docs/native-experiment-handover.md for host setup.
 campaign:
   name: middlebox_startup
   output_root: experiments
@@ -12,42 +14,67 @@ campaign:
 
 # Full-handler startup includes schema initialization. JWKS initialization is
 # lazy and is not reached by the canonical X-Testing benchmark requests.
-# Delegation reuse and quote settings are intentionally absent: startup ends at
-# worker readiness, before a client can trigger delegation or attestation work.
+# Quote emission is explicitly disabled for this local campaign. Startup ends
+# at worker readiness, before a client can trigger delegation or attestation.
 
 deployments:
   - name: startup_native
     kind: baremetal
-    command: ["./middlebox", "-log_level", "error"]
+    command: ["./middlebox", "-log_level", "error", "-ca", "/path/to/dcmb/certs_external/ca.crt"]
 
   - name: startup_gramine_sgx
     kind: gramine_sgx
     command: ["gramine-sgx", "middlebox", "-log_level", "error"]
+    env: {MBX_EMIT_QUOTE: "0"}
 
   - name: startup_container
     kind: docker_gateway
+    runtime: docker
+    socket_host: /var/run/docker.sock
+    socket_container: /var/run/docker.sock
+    network: dcmb-middlebox-net
+    worker_certs_host_path: /path/to/dcmb/certs_external
+    worker_certs_container_path: /home/bonsai/dcmb/certs_external
+    worker_ca: /home/bonsai/dcmb/certs_external/ca.crt
     worker_image: dcmiddlebox-worker:baseline
-    min_ready: 1
+    min_ready: 2
     scale_up_by: 1
     worker_trace_enabled: false
 
   - name: startup_container_gramine_sgx
     kind: docker_gateway
+    runtime: docker
+    socket_host: /var/run/docker.sock
+    socket_container: /var/run/docker.sock
+    network: dcmb-middlebox-net
+    worker_certs_host_path: /path/to/dcmb/certs_external
+    worker_certs_container_path: /home/bonsai/dcmb/certs_external
+    worker_ca: /home/bonsai/dcmb/certs_external/ca.crt
+    worker_emit_quote: "0"
     worker_image: dcmiddlebox-worker:sgx-standard-startup
     worker_sgx_enabled: true
-    min_ready: 1
+    min_ready: 2
     scale_up_by: 1
     worker_trace_enabled: false
     docker_ready_timeout_ms: 60000
 
   - name: startup_container_sgxgo
     kind: docker_gateway
+    runtime: docker
+    socket_host: /var/run/docker.sock
+    socket_container: /var/run/docker.sock
+    network: dcmb-middlebox-net
+    worker_certs_host_path: /path/to/dcmb/certs_external
+    worker_certs_container_path: /home/bonsai/dcmb/certs_external
+    worker_ca: /home/bonsai/dcmb/certs_external/ca.crt
+    worker_emit_quote: "0"
     worker_image: dcmiddlebox-worker:sgxgo
     worker_sgx_enabled: true
-    min_ready: 1
+    min_ready: 2
     scale_up_by: 1
     worker_trace_enabled: false
 
   - name: startup_sgxgo
     kind: gramine_sgx
     command: ["gramine-sgx", "middlebox_sgxgo", "-log_level", "error"]
+    env: {MBX_EMIT_QUOTE: "0"}

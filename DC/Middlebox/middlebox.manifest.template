@@ -10,10 +10,7 @@ loader.env.MBX_EMIT_QUOTE = { passthrough = true }
 loader.env.DCMB_TICKET_IDENTITY_KEY = { passthrough = true }
 loader.env.DCMB_GRAMINE_SHARED = "1"
 sys.enable_sigterm_injection = true
-#loader.env.GOMAXPROCS = "2"
-{% if gomaxprocs is defined %}
-loader.env.GOMAXPROCS = "{{ gomaxprocs }}"
-{% endif %}
+loader.env.GOMAXPROCS = "{{ gomaxprocs | default(32) }}"
 loader.env.GOMEMLIMIT = "1300MiB"
 
 fs.mounts = [
@@ -44,8 +41,8 @@ fs.mounts = [
 sgx.debug = false
 sgx.enclave_size = "{{ enclave_size | default('2G') }}"
 sgx.edmm_enable = {{ 'true' if env.get('EDMM', '0') == '1' else 'false' }}
-sgx.max_threads = {{ max_threads | default(40) }}
-sgx.remote_attestation = "dcap"
+sgx.max_threads = {{ max_threads | default(256) }}
+sgx.remote_attestation = "none"
 #sgx.enable_stats = true
 #sgx.profile.enable = "all"
 sgx.file_check_policy = "allow_all_but_log"

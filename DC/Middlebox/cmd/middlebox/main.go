@@ -659,7 +659,7 @@ func main() {
 	exitAfterRequestFlag := flag.Bool("exit_after_request", false, "exit process after one request")
 	minimalLogsFlag := flag.Bool("minimal_logs", true, "suppress legacy text timestamp logs")
 	logLevelFlag := flag.String("log_level", "error", "log level: debug/error")
-	tracePathFlag := flag.String("trace", "", "trace output file; requires build tag trace")
+	tracePathFlag := flag.String("trace", "", "trace output file, or buffers to retain logger buffers without recording; requires build tag trace")
 	traceBufferFlag := flag.Int("trace-buffer-events", 100000, "trace buffer capacity in events")
 	traceDropFlag := flag.Bool("trace-drop-on-full", true, "drop trace events instead of blocking when trace buffer is full")
 	//TODO: Add: 1) conditional build to keep only minimal setup in SGX case;
@@ -830,7 +830,12 @@ func main() {
 				benchtrace.Mark(benchtrace.MiddleboxUpstreamResponseFirst, traceID, 0)
 			},
 		}))
-		proxy.ServeHTTP(w, r)
+		session, _ := r.Context().Value(upstreamSessionContextKey{}).(*upstreamSession)
+		if session == nil || session.proxy == nil {
+			proxy.ErrorHandler(w, r, errors.New("request has no connection-specific proxy"))
+		} else {
+			session.proxy.ServeHTTP(w, r)
+		}
 		benchtrace.Mark(benchtrace.MiddleboxRequestDone, traceID, 0)
 
 		if !reuseDC {
@@ -903,6 +908,7 @@ func main() {
 			connectionID := fmt.Sprintf("%s-conn-%d", st.id, connectionCounter.Add(1))
 			benchtrace.Mark(benchtrace.MiddleboxConnectionAccepted, connectionID, connectionKey)
 			session := upstreamSessions.accept(connectionKey, connectionID)
+			session.configureProxy(proxy)
 			ctx = context.WithValue(ctx, connectionKeyContextKey{}, connectionKey)
 			return context.WithValue(ctx, upstreamSessionContextKey{}, session)
 		},

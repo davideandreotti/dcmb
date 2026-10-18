@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/httputil"
 	"net/url"
 	"sync"
 	"time"
@@ -17,6 +18,25 @@ import (
 )
 
 type upstreamSessionContextKey struct{}
+
+const responseCopyBufferSize = 32 * 1024
+
+// connectionResponseBuffer is owned by one downstream connection. HTTP/1.1
+// handlers on that connection use it sequentially; concurrent HTTP/2 streams
+// would require separate buffers. Allocate only when a response needs copying.
+type connectionResponseBuffer struct {
+	buf []byte
+}
+
+func (b *connectionResponseBuffer) Get() []byte {
+	if b.buf == nil {
+		b.buf = make([]byte, responseCopyBufferSize)
+	}
+	return b.buf
+}
+
+// Retain the buffer for the next response on the same connection.
+func (b *connectionResponseBuffer) Put([]byte) {}
 
 type upstreamSessionManager struct {
 	address    string
@@ -41,7 +61,15 @@ type upstreamSession struct {
 	available bool
 	closed    bool
 
-	transport *http.Transport
+	transport      *http.Transport
+	proxy          *httputil.ReverseProxy
+	responseBuffer connectionResponseBuffer
+}
+
+func (s *upstreamSession) configureProxy(template *httputil.ReverseProxy) {
+	proxy := *template
+	proxy.BufferPool = &s.responseBuffer
+	s.proxy = &proxy
 }
 
 func newUpstreamSessionManager(remote *url.URL, roots *x509.CertPool) (*upstreamSessionManager, error) {

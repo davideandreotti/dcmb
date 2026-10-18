@@ -166,6 +166,29 @@ controls are summarized below. Each Go binary also supports `-h`.
 | Gateway | `-log_level` plus the Docker/backend environment generated from YAML |
 | All traced roles | `-trace`, `-trace-buffer-events`, `-trace-drop-on-full` |
 
+In a tracing-enabled build, `-trace buffers` retains the normal event queue
+(`-trace-buffer-events`, default 100000) and 1 MiB writer buffer, but records
+no events, opens no file, and starts no writer goroutine. This startup-only
+mode is an experimental GC-pacing control, not event collection. The shared
+Gramine memory sampler is also disabled for this value. No-trace builds reject
+it. Omitting `-trace` still disables tracing without retaining buffers; a file
+path still enables normal recording. Use `./buffers` to write a file literally
+named `buffers`.
+
+For shared deployments, add `"-trace", "buffers"` to the existing YAML
+`command` and set `trace_enabled: false` so the controller does not override
+it with an output path. Client and other role tracing remain independently
+configured. No new environment variable or build control is needed; rebuild
+the executable (and signed manifests/images when applicable) before using it.
+
+For container deployments, use `worker_trace_enabled: buffers` in YAML.
+The existing setting accepts `false` (no allocations/recording), `true`
+(normal trace files), or `buffers` (retained allocations only). The gateway
+passes `-trace buffers` to each worker without mounting a worker trace directory
+for this mode. Existing boolean settings retain their behaviour. Gateway and
+client trace collection remain independent; rebuild the gateway and worker
+images before using the new value.
+
 The middlebox receives its upstream endpoints through `OPERATOR_TARGET` and
 `OPERATOR_CERT_URL`. `MBX_EMIT_QUOTE=1` enables quote generation in SGX runs.
 Container settings such as worker image, network, socket, reuse policy, SGX
@@ -197,6 +220,53 @@ the campaign summary and does not prevent subsequent points from running.
 | `configs_handshake_capacity.yml` | Fresh and resumed handshake-capacity sweeps across the complete deployment set |
 | `configs_latency_dissection.yml` | Complete traced fresh, persistent, and resumed latency-dissection matrix |
 | `configs_startup.yml` | Native, Gramine, container, standard-Gramine-container, SGX-Go-container, and SGX-Go-process startup |
+
+The single-client (`configs.yml`), client-scalability
+(`configs_clients_scalability.yml`) and handshake-capacity campaigns use
+shared `-trace buffers` with `trace_enabled: false`, and container
+`worker_trace_enabled: buffers`. This retains allocations without recording
+middlebox events. `campaign.trace_roles: [client, gateway, certserver, server]`
+keeps the client/service events needed for plotting. Process/container CPU
+collection remains enabled. Buffer mode skips the shared-SGX Go-memory sampler;
+preserve historical memory measurements with their original provenance rather
+than attaching them to buffer-only runs. Latency dissection keeps full tracing;
+startup retains its original tracing settings.
+
+All traffic campaigns use five 60-second repeats and one-second warmup.
+The single-client persistent sweep has 17 rates from 1 through 5000 RPS
+(spin pacing); scalability uses clients 1/5/10/20/30/40/50 at closed loop and
+500 aggregate RPS (timer pacing). Single-client also retains 35 low-load
+fresh/resumed reference repetitions: 460 total, including 425 persistent.
+The other canonical totals are 280 scalability, 140 handshake, 60 latency,
+and 30 startup repetitions. The complete pool policies and handover commands
+are in [the handover](../../docs/native-experiment-handover.md).
+
+Persistent throughput prewarming sets `min_ready = max_workers = clients + 1`
+and retains `scale_up_by: 10`. Fresh handshake containers instead have two
+workers, `scale_up_by: 1`, prewarming off, and deletion after use. Resumed
+handshake containers prewarm ten workers for ten logical clients. Do not apply
+the fresh-handshake pool policy to the persistent/resumed sweeps.
+
+Quotes are off in the canonical matrices (`MBX_EMIT_QUOTE: "0"` or
+`worker_emit_quote: "0"`) and manifests (`sgx.remote_attestation = "none"`).
+Standard shared Gramine defaults are 2G enclave, 256 threads, GOMAXPROCS 32,
+and GOMEMLIMIT 1300MiB. SGX-Go retains its separate enclave/thread defaults.
+
+The P7 scalability figure selects 500 aggregate requests/s when present,
+otherwise 10. It uses one rate for the entire figure, never mixing the two.
+P7 still requires all four strategies, including their closed-loop points, so
+provide the complete series before generating the comparison. Its paper view
+ends at 40 clients; 50-client runs remain in the exported summary.
+The historical `T2-clients-memory.tex` table remains at 10 requests/s;
+it is not a 500-rps memory result.
+
+SGX1/SGX2 overlays and EPC comparison panels are generated only when both
+platforms have applicable data. EPC paging and occupancy extraction uses the
+existing optional host collector; `campaign.sgx_epc_monitor_enabled` defaults
+to false and the runner also requires an SGX deployment before starting it.
+Enabling it requires bpftrace and compatible kernel probe symbols. Occupancy
+is host-wide, not a per-enclave memory attribution. The EPC panels retain the
+historical closed-loop / 10-RPS workload selection.
 
 The committed files describe the reference campaign matrices and testbed.
 Create an ignored local copy for machine-specific paths, IP addresses, runtime

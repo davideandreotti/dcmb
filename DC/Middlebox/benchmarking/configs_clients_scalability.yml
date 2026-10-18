@@ -1,3 +1,5 @@
+# Canonical methodology; adapt /path/to/dcmb and SERVER_IP in an ignored local copy.
+# Docker is the reference runtime; see docs/native-experiment-handover.md for host setup.
 campaign:
   name: clients_scalability
   output_root: experiments
@@ -8,8 +10,12 @@ campaign:
   cooldown_s: 10
   readiness_timeout_s: 30
   cpu_interval_s: 0.2
+  # Keep middlebox logger buffers without recording; retain other trace roles.
+  # Shared commands and container worker_trace_enabled below select buffers.
+  # Shared-SGX memory sampling is disabled in buffer-only mode.
+  trace_roles: [client, gateway, certserver, server]
   # Optional SGX EPC paging instrumentation; excluded from canonical runs.
-  # sgx_epc_monitor_enabled: true
+  sgx_epc_monitor_enabled: false
   # sgx_epc_interval_ms: 1000
   trace_buffer_events: 100000
   trace_drop_on_full: true
@@ -18,25 +24,25 @@ hosts:
   client:
     host: localhost
     ip: 127.0.0.1
-    work_dir: /home/bonsai/dcmb/DC/Middlebox
+    work_dir: /path/to/dcmb/DC/Middlebox
   middlebox:
     host: localhost
     ip: 127.0.0.1
-    work_dir: /home/bonsai/dcmb/DC/Middlebox
+    work_dir: /path/to/dcmb/DC/Middlebox
   server:
     host: localhost
-    ip: 10.79.1.175
-    work_dir: /home/bonsai/dcmb
+    ip: SERVER_IP
+    work_dir: /path/to/dcmb/DC/Middlebox
 
 paths:
-  middlebox_dir: /home/bonsai/dcmb/DC/Middlebox
+  middlebox_dir: /path/to/dcmb/DC/Middlebox
 
 server:
-  target_url: https://10.79.1.175:8000
-  cert_url: http://10.79.1.175:5000
+  target_url: https://SERVER_IP:8000
+  cert_url: http://SERVER_IP:5000
   request_path: /function/init
-  certserver_command: ["./certserver", "-log_level", "error"]
-  appserver_command: ["./appserver", "-log_level", "error"]
+  certserver_command: ["./certserver", "-log_level", "error", "-cert-path", "/path/to/dcmb/certs_external/server/cert.pem", "-key-path", "/path/to/dcmb/certs_external/server/key.pem"]
+  appserver_command: ["./appserver", "-log_level", "error", "-cert-path", "/path/to/dcmb/certs_external/server/cert.pem", "-key-path", "/path/to/dcmb/certs_external/server/key.pem"]
 
 client:
   binary: ./client
@@ -57,37 +63,45 @@ client_matrix:
   # at every client count.
   points:
     - {clients: 1, rate: 0}
-    - {clients: 1, rate: 10}
+    - {clients: 1, rate: 500}
     - {clients: 5, rate: 0}
-    - {clients: 5, rate: 10}
+    - {clients: 5, rate: 500}
     - {clients: 10, rate: 0}
-    - {clients: 10, rate: 10}
+    - {clients: 10, rate: 500}
     - {clients: 20, rate: 0}
-    - {clients: 20, rate: 10}
+    - {clients: 20, rate: 500}
     - {clients: 30, rate: 0}
-    - {clients: 30, rate: 10}
+    - {clients: 30, rate: 500}
     - {clients: 40, rate: 0}
-    - {clients: 40, rate: 10}
+    - {clients: 40, rate: 500}
     - {clients: 50, rate: 0}
-    - {clients: 50, rate: 10}
+    - {clients: 50, rate: 500}
 
-# NOTE: on the rootful Podman host, verify that the streaming stats collector
-# reports source=podman_stats_stream in metadata.json; it falls back to
-# podman_stats_no_stream if that Podman version cannot stream --all.
+# Verify the container stats collector source in metadata.json after the smoke
+# test; collection support and fallback depend on the selected runtime.
 
 deployments:
   - name: baremetal_full_reuse
     kind: baremetal
-    command: ["./middlebox", "-log_level", "error", "-reuse_dc=true"]
+    trace_enabled: false
+    command: ["./middlebox", "-log_level", "error", "-reuse_dc=true", "-ca", "/path/to/dcmb/certs_external/ca.crt", "-trace", "buffers"]
 
   - name: sgx_full_reuse
     kind: gramine_sgx
-    command: ["gramine-sgx", "middlebox", "-log_level", "error", "-reuse_dc=true"]
+    trace_enabled: false
+    command: ["gramine-sgx", "middlebox", "-log_level", "error", "-reuse_dc=true", "-trace", "buffers"]
     env:
-      MBX_EMIT_QUOTE: "1"
+      MBX_EMIT_QUOTE: "0"
 
   - name: docker_full_reuse
     kind: docker_gateway
+    runtime: docker
+    socket_host: /var/run/docker.sock
+    socket_container: /var/run/docker.sock
+    network: dcmb-middlebox-net
+    worker_certs_host_path: /path/to/dcmb/certs_external
+    worker_certs_container_path: /home/bonsai/dcmb/certs_external
+    worker_ca: /home/bonsai/dcmb/certs_external/ca.crt
     prewarm_for_clients: true
     pool_readiness_timeout_s: 120
     worker_image: dcmiddlebox-worker:baseline
@@ -95,17 +109,24 @@ deployments:
     scale_up_by: 10
     container_stats_scope: all
     container_stats_collector: auto
-    worker_trace_enabled: false
+    worker_trace_enabled: buffers
 
   - name: docker_sgxgo_full_reuse
     kind: docker_gateway
+    runtime: docker
+    socket_host: /var/run/docker.sock
+    socket_container: /var/run/docker.sock
+    network: dcmb-middlebox-net
+    worker_certs_host_path: /path/to/dcmb/certs_external
+    worker_certs_container_path: /home/bonsai/dcmb/certs_external
+    worker_ca: /home/bonsai/dcmb/certs_external/ca.crt
     prewarm_for_clients: true
     pool_readiness_timeout_s: 120
     worker_image: dcmiddlebox-worker:sgxgo
     worker_reuse_dc: true
     worker_sgx_enabled: true
-    worker_emit_quote: "1"
+    worker_emit_quote: "0"
     scale_up_by: 10
     container_stats_scope: all
     container_stats_collector: auto
-    worker_trace_enabled: false
+    worker_trace_enabled: buffers

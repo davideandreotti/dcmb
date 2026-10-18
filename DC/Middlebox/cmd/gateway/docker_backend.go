@@ -58,6 +58,7 @@ type dockerBackend struct {
 	operatorExitAfterRequest    string
 	operatorConsumeAfterRequest string
 	workerTraceEnabled          bool
+	workerTraceBuffers          bool
 	workerTraceHostDir          string
 	workerTraceContainerDir     string
 	workerTraceBufferEvents     int
@@ -209,6 +210,7 @@ func newDockerBackendFromEnv() (*dockerBackend, error) {
 		operatorExitAfterRequest:    getEnv("DOCKER_WORKER_EXIT_AFTER_REQUEST", getEnv("OPERATOR_EXIT_AFTER_REQUEST", "false")),
 		operatorConsumeAfterRequest: getEnv("DOCKER_WORKER_CONSUME_AFTER_REQUEST", getEnv("OPERATOR_CONSUME_AFTER_REQUEST", "false")),
 		workerTraceEnabled:          getEnvBool("DOCKER_WORKER_TRACE_ENABLED", false),
+		workerTraceBuffers:          strings.EqualFold(getEnv("DOCKER_WORKER_TRACE_ENABLED", "false"), "buffers"),
 		workerTraceHostDir:          strings.TrimSpace(getEnv("DOCKER_WORKER_TRACE_HOST_DIR", "/tmp/dcmb-traces")),
 		workerTraceContainerDir:     strings.TrimSpace(getEnv("DOCKER_WORKER_TRACE_CONTAINER_DIR", "/trace")),
 		workerTraceBufferEvents:     getEnvInt("DOCKER_WORKER_TRACE_BUFFER_EVENTS", 100000),
@@ -491,10 +493,14 @@ func (d *dockerBackend) createAndWaitReady() (*dockerWorker, error) {
 	if d.operatorCA != "" {
 		cmd = append(cmd, "-ca", d.operatorCA)
 	}
-	if d.workerTraceEnabled && d.workerTraceContainerDir != "" {
+	if d.workerTraceBuffers || (d.workerTraceEnabled && d.workerTraceContainerDir != "") {
+		tracePath := "buffers"
+		if !d.workerTraceBuffers {
+			tracePath = path.Join(d.workerTraceContainerDir, name+".bin")
+		}
 		cmd = append(
 			cmd,
-			"-trace", path.Join(d.workerTraceContainerDir, name+".bin"),
+			"-trace", tracePath,
 			"-trace-buffer-events", strconv.Itoa(d.workerTraceBufferEvents),
 			fmt.Sprintf("-trace-drop-on-full=%t", d.workerTraceDropOnFull),
 		)

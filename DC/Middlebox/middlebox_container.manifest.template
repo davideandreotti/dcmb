@@ -26,7 +26,7 @@ sgx.debug = false
 sgx.enclave_size = "2G"
 sgx.edmm_enable = false
 sgx.max_threads = 16
-sgx.remote_attestation = "dcap"
+sgx.remote_attestation = "none"
 sgx.file_check_policy = "allow_all_but_log"
 
 sgx.trusted_files = [

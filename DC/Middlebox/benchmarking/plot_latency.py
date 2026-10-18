@@ -13,6 +13,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 from matplotlib.ticker import FuncFormatter, LogLocator, NullLocator, StrMethodFormatter
 from matplotlib.transforms import ScaledTranslation
 
@@ -2379,22 +2380,36 @@ def plot_handshake_latency_capacity(summary_rows: list[dict[str, Any]], output_p
 
 
 def plot_aggregate_scalability(summary_rows: list[dict[str, Any]], output_path: Path) -> list[Path]:
-    strategies = ("baremetal", "sgx", "docker", "docker_sgx")
+    overlay_platforms = {
+        epc_platform(str(row["deployment"])) for row in summary_rows
+        if include_throughput_row(row, True, ("persistent",), clients=None)
+    } >= {"SGX1", "SGX2"}
+    strategies = ("baremetal", "sgx", "docker", "docker_sgx", "docker_sgx2")
     strategy_labels = {
         "baremetal": "Shared",
         "sgx": "Shared SGX",
         "docker": "Container",
         "docker_sgx": "Container+SGX",
     }
-    fixed_rate = 10.0
+    # Select one rate for the whole figure, never mix 10 and 500 across points.
+    fixed_rate = 500.0 if any(
+        parse_float(row.get("offered_rps")) == 500.0
+        for row in summary_rows
+    ) else 10.0
     saturated: dict[str, dict[int, tuple[float, float]]] = {}
     fixed_latency: dict[str, dict[int, tuple[float, float]]] = {}
+
+    def series_strategy(row: dict[str, Any]) -> str:
+        strategy = timeseries_group(str(row["deployment"]))[0]
+        if overlay_platforms and strategy == "docker_sgx" and epc_platform(str(row["deployment"])) == "SGX2":
+            return "docker_sgx2"
+        return strategy
 
     for strategy in strategies:
         rows = [
             row
             for row in summary_rows
-            if timeseries_group(str(row["deployment"]))[0] == strategy
+            if series_strategy(row) == strategy
             and include_throughput_row(row, True, ("persistent",), clients=None)
         ]
         by_clients_rate: dict[int, dict[float, list[dict[str, Any]]]] = {}
@@ -2410,7 +2425,7 @@ def plot_aggregate_scalability(summary_rows: list[dict[str, Any]], output_path: 
             achieved = [
                 value
                 for row in closed_rows
-                if (point_is_usable(row) or (strategy == "docker_sgx" and clients == 40))
+                if point_is_usable(row)
                 and (value := parse_float(row.get("achieved_rps"))) is not None
             ]
             if achieved:
@@ -2432,7 +2447,7 @@ def plot_aggregate_scalability(summary_rows: list[dict[str, Any]], output_path: 
                     confidence_interval_95(latency),
                 )
 
-    complete = all(len(saturated.get(strategy, {})) >= 2 and len(fixed_latency.get(strategy, {})) >= 2 for strategy in strategies)
+    complete = all(len(saturated.get(strategy, {})) >= 2 and len(fixed_latency.get(strategy, {})) >= 2 for strategy in strategies[:-1])
     if not complete:
         print(f"[PLOT] incomplete four-strategy scalability matrix; skipping {output_path.name}")
         return []
@@ -2445,6 +2460,10 @@ def plot_aggregate_scalability(summary_rows: list[dict[str, Any]], output_path: 
             for clients in by_clients
         }
     )
+    platform_handles = [
+        Line2D([], [], color="dimgray", linestyle="-", label="SGX1"),
+        Line2D([], [], color="dimgray", linestyle="--", label="SGX2"),
+    ]
 
     def draw_panel(
         ax: Any, values: dict[str, dict[int, tuple[float, float]]], metric: str,
@@ -2454,6 +2473,7 @@ def plot_aggregate_scalability(summary_rows: list[dict[str, Any]], output_path: 
             points = sorted(values.get(strategy, {}).items())
             if not points:
                 continue
+            base_strategy = "docker_sgx" if strategy == "docker_sgx2" else strategy
             ax.errorbar(
                 [clients for clients, _ in points],
                 [value[0] for _, value in points],
@@ -2461,10 +2481,11 @@ def plot_aggregate_scalability(summary_rows: list[dict[str, Any]], output_path: 
                 marker="o",
                 linewidth=1.4,
                 capsize=3,
-                color=STRATEGY_COLORS.get(strategy),
-                label=strategy_labels[strategy],
+                color=STRATEGY_COLORS.get(base_strategy),
+                linestyle="--" if strategy == "docker_sgx2" else "-",
+                label="_nolegend_" if strategy == "docker_sgx2" else strategy_labels[strategy],
             )
-        ax.set_xlabel("Persistent clients")
+        ax.set_xlabel("Persistent connections")
         ax.set_xticks(client_ticks)
         ax.set_xticklabels([str(clients) for clients in client_ticks])
         ax.set_xlim(0, max(client_ticks) + 2)
@@ -2478,7 +2499,14 @@ def plot_aggregate_scalability(summary_rows: list[dict[str, Any]], output_path: 
             ax.set_ylabel("Mean end-to-end latency (ms)")
             ax.set_ylim(bottom=0)
         ax.grid(True, alpha=0.25)
-        if not paper:
+        if not paper and values.get("docker_sgx") and values.get("docker_sgx2"):
+            platform_legend = ax.legend(
+                handles=platform_handles,
+                loc="upper left", fontsize=8,
+            )
+            ax.add_artist(platform_legend)
+            ax.legend(fontsize=8, loc="upper right")
+        elif not paper:
             ax.legend(fontsize=8)
 
     fig, axes = plt.subplots(1, 2, figsize=(11.0, 4.5), squeeze=False)
@@ -2502,15 +2530,29 @@ def plot_aggregate_scalability(summary_rows: list[dict[str, Any]], output_path: 
         (fixed_latency, "latency", panel_paths[1]),
     ):
         with plt.rc_context(PAPER_FONT_CONTEXT):
-            panel_fig, panel_ax = plt.subplots(figsize=PAPER_FIGURE_SIZE)
+            base_height = PAPER_FIGURE_SIZE[1]
+            extra_height = 0.45 if values.get("docker_sgx") and values.get("docker_sgx2") else 0.0
+            height = base_height + extra_height
+            panel_fig, panel_ax = plt.subplots(figsize=(PAPER_FIGURE_SIZE[0], height))
             draw_panel(panel_ax, values, metric, paper=True)
             handles, labels = panel_ax.get_legend_handles_labels()
             panel_fig.legend(
-                handles, labels, loc="lower center", bbox_to_anchor=(0.5, 0.01),
+                handles, labels, loc="lower center",
+                bbox_to_anchor=(0.5, (0.01 * base_height + extra_height) / height),
                 ncol=len(handles), handlelength=1.0, handletextpad=0.3,
                 columnspacing=0.6,
             )
-            panel_fig.subplots_adjust(**PAPER_PANEL_ADJUST)
+            if extra_height:
+                panel_fig.legend(
+                    handles=platform_handles, loc="lower center",
+                    bbox_to_anchor=(0.5, 0.01 * base_height / height),
+                    ncol=2, handlelength=2.0, handletextpad=0.3, columnspacing=0.6,
+                )
+            panel_fig.subplots_adjust(**{
+                **PAPER_PANEL_ADJUST, "left": 0.16,
+                "bottom": (PAPER_PANEL_ADJUST["bottom"] * base_height + extra_height) / height,
+                "top": (PAPER_PANEL_ADJUST["top"] * base_height + extra_height) / height,
+            })
             panel_fig.savefig(path)
             plt.close(panel_fig)
 
@@ -2528,7 +2570,9 @@ def epc_platform(run_name: str) -> str | None:
     return None
 
 
-def epc_paging_operations(run_summary: dict[str, Any]) -> float | None:
+def epc_run_metrics(
+    run_summary: dict[str, Any],
+) -> tuple[float, float | None, int | None] | None:
     run_dir = Path(str(run_summary["run_dir"]))
     metadata_path = run_dir / "metadata.json"
     epc_path = run_dir / "epc" / "sgx_epc.csv"
@@ -2545,14 +2589,21 @@ def epc_paging_operations(run_summary: dict[str, Any]) -> float | None:
     if offset_ns is None or client_start_ns is None or not duration_s:
         return None
 
-    samples: list[tuple[int, int, int]] = []
+    samples: list[tuple[int, int, int, float | None]] = []
     with epc_path.open(newline="", encoding="utf-8") as handle:
         for row in csv.DictReader(handle):
             timestamp_ns = parse_int(row.get("timestamp_monotonic_ns"))
             ewb = parse_int(row.get("ewb_success_total"))
             eldu = parse_int(row.get("eldu_success_total"))
+            total = parse_int(row.get("epc_total_pages"))
+            occupied = parse_int(row.get("epc_occupied_pages"))
+            occupancy = (
+                100.0 * occupied / total
+                if total and occupied is not None and 0 <= occupied <= total
+                else None
+            )
             if timestamp_ns is not None and ewb is not None and eldu is not None:
-                samples.append((timestamp_ns + offset_ns, ewb, eldu))
+                samples.append((timestamp_ns + offset_ns, ewb, eldu, occupancy))
 
     client_end_ns = client_start_ns + round(duration_s * 1e9)
     start = next((sample for sample in reversed(samples) if sample[0] <= client_start_ns), None)
@@ -2564,7 +2615,15 @@ def epc_paging_operations(run_summary: dict[str, Any]) -> float | None:
     eldu_delta = end[2] - start[2]
     if ewb_delta < 0 or eldu_delta < 0:
         return None
-    return float(ewb_delta + eldu_delta)
+    occupancy = max(
+        (sample[3] for sample in samples
+         if client_start_ns <= sample[0] <= client_end_ns and sample[3] is not None),
+        default=None,
+    )
+    return (
+        float(ewb_delta + eldu_delta), occupancy,
+        parse_int(monitor.get("epc_total_bytes")),
+    )
 
 
 def plot_epc_scalability(
@@ -2572,11 +2631,9 @@ def plot_epc_scalability(
 ) -> list[Path]:
     clients = (1, 5, 10, 20, 30, 40)
     platforms = ("SGX1", "SGX2")
-    workloads = {
-        "closed": (0.0, "P7c-client-scalability-epc-closed.pdf"),
-        "fixed": (10.0, "P7d-client-scalability-epc-fixed.pdf"),
-    }
-    values: dict[tuple[str, str, int], list[float]] = {}
+    workloads = {"closed": 0.0, "fixed": 10.0}
+    values: dict[tuple[str, str, str, int], list[float]] = {}
+    capacities: dict[str, int] = {}
 
     for summary in run_summaries:
         platform = epc_platform(Path(str(summary.get("run_dir", ""))).name)
@@ -2590,96 +2647,108 @@ def plot_epc_scalability(
         ):
             continue
         workload = next(
-            (name for name, (target, _) in workloads.items() if math.isclose(rate, target)),
+            (name for name, target in workloads.items() if math.isclose(rate, target)),
             None,
         )
         if workload is None:
             continue
-        paging = epc_paging_operations(summary)
-        if paging is not None:
-            values.setdefault((workload, platform, client_count), []).append(paging)
+        metrics = epc_run_metrics(summary)
+        if metrics is not None:
+            paging, occupancy, capacity = metrics
+            if capacity:
+                capacities[platform] = capacity
+            for metric, value in (("paging", paging), ("occupancy", occupancy)):
+                if value is not None:
+                    values.setdefault((metric, workload, platform, client_count), []).append(value)
 
-    if not values:
+    if {key[2] for key in values} != set(platforms):
         return []
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    paths: list[Path] = []
-    bar_width = 0.9075
-    offsets = {"SGX1": -0.45, "SGX2": 0.45}
+    bar_width = 0.38
+    offsets = {"SGX1": -0.20, "SGX2": 0.20}
     styles = {
         "SGX1": {"color": STRATEGY_COLORS["docker_sgx"], "hatch": None},
         "SGX2": {"color": "white", "hatch": "///"},
     }
     maximum = max(
-        mean(point) + confidence_interval_95(point)
-        for point in values.values()
-        if point
+        mean(point)
+        for key, point in values.items()
+        if key[0] == "paging"
     )
-
-    for workload, (_, filename) in workloads.items():
-        path = output_dir / filename
-        with plt.rc_context(PAPER_FONT_CONTEXT):
-            fig, ax = plt.subplots(figsize=PAPER_FIGURE_SIZE)
+    paging_limit = max(4.5e6, maximum * 1.35)
+    paths: list[Path] = []
+    panels = (
+        ("paging", "closed", "P7c-client-scalability-epc-closed.pdf"),
+        ("paging", "fixed", "P7d-client-scalability-epc-fixed.pdf"),
+        ("occupancy", "closed", "P7e-client-scalability-epc-occupancy-closed.pdf"),
+        ("occupancy", "fixed", "P7f-client-scalability-epc-occupancy-fixed.pdf"),
+    )
+    with plt.rc_context({"font.size": 10.5, "axes.labelsize": 11.5, "xtick.labelsize": 9.5,
+                         "ytick.labelsize": 9.5}):
+        for metric, workload, filename in panels:
+            if not all(any(values.get((metric, workload, platform, client))
+                           for client in clients) for platform in platforms):
+                continue
+            fig, ax = plt.subplots(figsize=(2.8, 2.8))
             for platform in platforms:
-                platform_values = [values.get((workload, platform, client), []) for client in clients]
+                platform_values = [values.get((metric, workload, platform, client), []) for client in clients]
                 heights = [mean(point) if point else 0.0 for point in platform_values]
-                errors = [confidence_interval_95(point) if point else 0.0 for point in platform_values]
-                xs = [client + offsets[platform] for client in clients]
+                xs = [index + offsets[platform] for index in range(len(clients))]
                 style = styles[platform]
+                capacity = capacities.get(platform)
+                label = platform
+                if capacity:
+                    size = f"{capacity / 1e9:.2f} GB" if capacity >= 1e9 else f"{capacity / 1e6:.1f} MB"
+                    label = f"{platform} ({size} EPC)"
                 ax.bar(
                     xs,
                     heights,
                     width=bar_width,
-                    yerr=errors,
                     color=style["color"],
                     edgecolor=STRATEGY_COLORS["docker_sgx"],
                     hatch=style["hatch"],
-                    linewidth=0.9,
-                    capsize=3,
-                    label=platform,
+                    linewidth=0.7,
+                    label=label,
                 )
                 for x, point, height in zip(xs, platform_values, heights):
                     if not point or height == 0:
-                        ax.text(
-                            x,
-                            0.015,
+                        ax.annotate(
                             "N/A" if not point else "0",
-                            transform=ax.get_xaxis_transform(),
+                            (x, 0),
+                            xytext=(0, -3 if metric == "paging" else 3),
+                            textcoords="offset points",
                             ha="center",
-                            va="bottom",
-                            fontsize=8,
+                            va="top" if metric == "paging" else "bottom",
+                            fontsize=8.5,
                             color="dimgray",
-                            rotation=90,
                         )
 
             ax.set_xlabel("Persistent connections")
-            ax.set_xticks(clients)
+            ax.set_xticks(range(len(clients)))
             ax.set_xticklabels([str(client) for client in clients])
-            ax.set_xlim(0, max(clients) + 2)
-            ax.set_ylabel("EPC page evictions and reloads")
-            ax.set_ylim(0, max(4.5e6, maximum * 1.05))
-            ax.yaxis.set_major_formatter(
-                FuncFormatter(lambda value, _: "0" if value == 0 else f"{value / 1e6:g}M")
-            )
+            ax.set_xlim(-0.6, len(clients) - 0.4)
+            ax.set_box_aspect(1)
+            if metric == "paging":
+                ax.set_ylabel("EPC evictions + reloads")
+                ax.set_ylim(-0.1 * paging_limit, paging_limit)
+                ax.set_yticks([tick * 1e6 for tick in range(int(paging_limit / 1e6) + 1)])
+                ax.yaxis.set_major_formatter(
+                    FuncFormatter(lambda value, _: "0" if value == 0 else f"{value / 1e6:g}M")
+                )
+                ax.axhline(0, color="dimgray", linewidth=0.5)
+            else:
+                ax.set_ylabel("Peak EPC occupancy (%)")
+                ax.set_ylim(0, 125)
+                ax.set_yticks((0, 25, 50, 75, 100))
             ax.grid(True, axis="y", alpha=0.25)
-            ax.legend(
-                loc="upper right",
-                ncol=1,
-                handlelength=1.0,
-                handletextpad=0.3,
-            )
-            fig.subplots_adjust(**PAPER_PANEL_ADJUST)
-            ax.set_position(
-                [
-                    PAPER_PANEL_ADJUST["left"],
-                    PAPER_PANEL_ADJUST["bottom"],
-                    PAPER_PANEL_ADJUST["right"] - PAPER_PANEL_ADJUST["left"],
-                    PAPER_PANEL_ADJUST["top"] - PAPER_PANEL_ADJUST["bottom"],
-                ]
-            )
+            ax.legend(loc="upper right", fontsize=9, framealpha=1,
+                      handlelength=1.0, handletextpad=0.3, borderpad=0.35, labelspacing=0.25)
+            fig.subplots_adjust(left=0.20, right=0.98, bottom=0.17, top=0.96)
+            path = output_dir / filename
             fig.savefig(path)
             plt.close(fig)
-        paths.append(path)
+            paths.append(path)
 
     return paths
 

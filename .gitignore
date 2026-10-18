@@ -71,6 +71,7 @@ kubectl.sha256
 
 # Local notes and backups
 /.local/
+/scripts/cpu-performance-mode.local-state*
 
 # Python/cache artifacts
 __pycache__/

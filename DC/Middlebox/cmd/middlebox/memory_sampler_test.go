@@ -103,3 +103,11 @@ func TestGramineMemorySamplerWritesDerivedFiles(t *testing.T) {
 		}
 	}
 }
+
+func TestGramineMemorySamplerSkipsBufferOnlyTracing(t *testing.T) {
+	t.Setenv(sharedGramineEnv, "1")
+	sampler, err := startGramineMemorySampler("buffers")
+	if sampler != nil || err != nil {
+		t.Fatalf("buffer-only mode started a sampler: sampler=%v err=%v", sampler, err)
+	}
+}

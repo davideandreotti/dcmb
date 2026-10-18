@@ -2,15 +2,12 @@
 
 set -euo pipefail
 
-SERVICE_NAME="cpu-performance-mode.service"
-SERVICE_PATH="/etc/systemd/system/$SERVICE_NAME"
-STATE_DIR="/var/lib/cpu-performance-mode"
-STATE_FILE="$STATE_DIR/original-settings"
-CPUFREQ_DIR="/sys/devices/system/cpu/cpufreq"
-
-# Used only if no saved pre-performance settings exist.
-OFF_GOVERNOR="${CPU_GOVERNOR_OFF:-powersave}"
-OFF_EPP="${CPU_EPP_OFF:-balance_performance}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+STATE_FILE="$SCRIPT_DIR/cpu-performance-mode.local-state"
+CPU_SYS_DIR="/sys/devices/system/cpu"
+CPUFREQ_DIR="$CPU_SYS_DIR/cpufreq"
+TUNED_PROFILE_FILE="/etc/tuned/active_profile"
+TUNED_MODE_FILE="/etc/tuned/profile_mode"
 PERFORMANCE_IDLE_DISABLE_STATES="${CPU_IDLE_DISABLE_STATES:-2 3}"
 
 usage() {
@@ -20,20 +17,19 @@ Usage: sudo ./scripts/cpu-performance-mode.sh on
        ./scripts/cpu-performance-mode.sh status
 
 Commands:
-  on      Save current CPU scaling settings, install/enable the performance service,
-          and apply performance governor/EPP immediately. Also disable idle
-          states 2 and 3 by default, matching the benchmark tuning we used.
-  off     Disable the performance service and restore the saved settings. If no saved
-          settings exist, fall back to powersave + balance_performance. Also
-          re-enable all CPU idle states.
-  status  Print service state, current per-policy governor/EPP values, and
-          disabled idle states.
+  on      Save the current TuneD profile/mode, CPU governor/EPP, and idle-state
+          flags alongside this script. Apply latency-performance and performance
+          governor/EPP, and disable idle states 2 and 3 by default.
+  off     Restore the saved profile/mode and exact CPU settings. Without saved
+          settings, refuse to guess. No service is installed at boot.
+  status  Print the TuneD profile/mode, saved-state location, current governor/EPP,
+          and disabled idle states. Use sudo to read the root-owned saved state.
 
-Fallbacks can be overridden when no saved state exists:
-  CPU_GOVERNOR_OFF=powersave CPU_EPP_OFF=balance_power sudo ./scripts/cpu-performance-mode.sh off
+Run on before experiments and off afterwards; restoration is manual.
+TuneD keeps the selected profile across reboot until you change it back.
 
 Performance idle states can be overridden:
-  CPU_IDLE_DISABLE_STATES="2 3 4" sudo ./scripts/cpu-performance-mode.sh on
+  sudo env CPU_IDLE_DISABLE_STATES="2 3 4" ./scripts/cpu-performance-mode.sh on
 USAGE
 }
 
@@ -69,33 +65,23 @@ write_setting() {
     fi
 }
 
-enable_all_idle_states() {
-    if command -v cpupower >/dev/null 2>&1; then
-        cpupower idle-set -E >/dev/null
-        return
-    fi
-
-    local disable_file
-    while IFS= read -r disable_file; do
-        echo 0 >"$disable_file"
-    done < <(find /sys/devices/system/cpu/cpu*/cpuidle/state* -type f -name disable 2>/dev/null)
+idle_state_files() {
+    local path
+    for path in "$CPU_SYS_DIR"/cpu*/cpuidle/state*/disable; do
+        if [[ -f "$path" ]]; then
+            printf '%s\n' "$path"
+        fi
+    done
 }
 
 disable_performance_idle_states() {
-    local state
-
-    if command -v cpupower >/dev/null 2>&1; then
-        for state in $PERFORMANCE_IDLE_DISABLE_STATES; do
-            cpupower idle-set -d "$state" >/dev/null
-        done
-        return
-    fi
-
-    local disable_file
+    local state disable_file
     for state in $PERFORMANCE_IDLE_DISABLE_STATES; do
-        while IFS= read -r disable_file; do
-            echo 1 >"$disable_file"
-        done < <(find /sys/devices/system/cpu/cpu*/cpuidle/state"$state" -type f -name disable 2>/dev/null)
+        for disable_file in "$CPU_SYS_DIR"/cpu*/cpuidle/state"$state"/disable; do
+            if [[ -f "$disable_file" ]]; then
+                echo 1 >"$disable_file"
+            fi
+        done
     done
 }
 
@@ -110,17 +96,16 @@ disabled_idle_states() {
         state="$(basename "$state_dir")"
         name="$(cat "$state_dir/name" 2>/dev/null || echo "$state")"
         printf '%s %s %s\n' "$cpu" "$state" "$name"
-    done < <(find /sys/devices/system/cpu/cpu*/cpuidle/state* -type f -name disable 2>/dev/null)
+    done < <(idle_state_files)
 }
 
 save_current_settings_once() {
     [[ ! -f "$STATE_FILE" ]] || return 0
 
-    mkdir -p "$STATE_DIR"
-    chmod 700 "$STATE_DIR"
-
     local tmp
-    tmp="$(mktemp)"
+    tmp="$(mktemp "$STATE_FILE.tmp.XXXXXX")"
+    printf 'tuned profile %s\n' "$(cat "$TUNED_PROFILE_FILE")" >>"$tmp"
+    printf 'tuned mode %s\n' "$(cat "$TUNED_MODE_FILE")" >>"$tmp"
 
     local policy name
     while IFS= read -r policy; do
@@ -133,111 +118,114 @@ save_current_settings_once() {
         fi
     done < <(policies)
 
-    if [[ -s "$tmp" ]]; then
-        mv "$tmp" "$STATE_FILE"
-        chmod 600 "$STATE_FILE"
-    else
-        rm -f "$tmp"
-    fi
-}
-
-install_service() {
-    local idle_states
-    idle_states="$PERFORMANCE_IDLE_DISABLE_STATES"
-
-    cat >"$SERVICE_PATH" <<'SERVICE'
-[Unit]
-Description=Set CPU governor and EPP to performance
-After=multi-user.target
-
-[Service]
-Type=oneshot
-SERVICE
-    cat >>"$SERVICE_PATH" <<SERVICE
-Environment="CPU_IDLE_DISABLE_STATES=$idle_states"
-SERVICE
-    cat >>"$SERVICE_PATH" <<'SERVICE'
-ExecStart=/bin/sh -c 'for p in /sys/devices/system/cpu/cpufreq/policy*; do [ -f "$p/scaling_governor" ] && echo performance > "$p/scaling_governor"; [ -f "$p/energy_performance_preference" ] && echo performance > "$p/energy_performance_preference"; done; if command -v cpupower >/dev/null 2>&1; then for s in $CPU_IDLE_DISABLE_STATES; do cpupower idle-set -d "$s" >/dev/null; done; else for s in $CPU_IDLE_DISABLE_STATES; do for f in /sys/devices/system/cpu/cpu*/cpuidle/state"$s"/disable; do [ -f "$f" ] && echo 1 > "$f"; done; done; fi'
-RemainAfterExit=yes
-
-[Install]
-WantedBy=multi-user.target
-SERVICE
-
-    systemctl daemon-reload
-    systemctl enable "$SERVICE_NAME" >/dev/null
-    systemctl restart "$SERVICE_NAME"
+    local disable_file state_dir cpu_dir
+    while IFS= read -r disable_file; do
+        state_dir="$(dirname "$disable_file")"
+        cpu_dir="$(dirname "$(dirname "$state_dir")")"
+        printf '%s/%s idle %s\n' "$(basename "$cpu_dir")" \
+            "$(basename "$state_dir")" "$(cat "$disable_file")" >>"$tmp"
+    done < <(idle_state_files)
+    mv "$tmp" "$STATE_FILE"
 }
 
 restore_saved_settings() {
-    local policy_name kind value policy
+    local target kind value value_file
 
-    while read -r policy_name kind value; do
-        policy="$CPUFREQ_DIR/$policy_name"
-        [[ -d "$policy" ]] || continue
-
+    while read -r target kind value; do
         case "$kind" in
             governor)
-                write_setting "$policy/scaling_governor" "$policy/scaling_available_governors" "$value"
+                [[ "$target" =~ ^policy[0-9]+$ ]] || return 1
+                value_file="$CPUFREQ_DIR/$target/scaling_governor"
                 ;;
             epp)
-                write_setting "$policy/energy_performance_preference" "$policy/energy_performance_available_preferences" "$value"
+                [[ "$target" =~ ^policy[0-9]+$ ]] || return 1
+                value_file="$CPUFREQ_DIR/$target/energy_performance_preference"
                 ;;
+            idle)
+                [[ "$target" =~ ^cpu[0-9]+/state[0-9]+$ && "$value" =~ ^[01]$ ]] || return 1
+                value_file="$CPU_SYS_DIR/${target%/*}/cpuidle/${target#*/}/disable"
+                ;;
+            profile|mode) continue ;;
+            *) return 1 ;;
         esac
+        if [[ ! -f "$value_file" ]]; then
+            echo "Cannot restore missing setting: $value_file; keeping saved state." >&2
+            return 1
+        fi
+        echo "$value" >"$value_file"
+        if [[ "$(cat "$value_file")" != "$value" ]]; then
+            echo "Restoration failed: $value_file; keeping saved state." >&2
+            return 1
+        fi
     done <"$STATE_FILE"
-
-    rm -f "$STATE_FILE"
 }
 
-apply_fallback_off_settings() {
+apply_performance_settings() {
     local policy
 
     while IFS= read -r policy; do
-        write_setting "$policy/scaling_governor" "$policy/scaling_available_governors" "$OFF_GOVERNOR"
-        write_setting "$policy/energy_performance_preference" "$policy/energy_performance_available_preferences" "$OFF_EPP"
+        write_setting "$policy/scaling_governor" "$policy/scaling_available_governors" performance
+        write_setting "$policy/energy_performance_preference" "$policy/energy_performance_available_preferences" performance
     done < <(policies)
 }
 
 turn_on() {
     require_root
+    command -v tuned-adm >/dev/null
+    [[ -s "$TUNED_PROFILE_FILE" && -s "$TUNED_MODE_FILE" ]]
+    local state
+    for state in $PERFORMANCE_IDLE_DISABLE_STATES; do
+        [[ "$state" =~ ^[0-9]+$ ]] || { echo "Invalid idle-state index: $state" >&2; return 1; }
+    done
     save_current_settings_once
-    install_service
+    tuned-adm profile latency-performance
+    tuned-adm verify
+    apply_performance_settings
     disable_performance_idle_states
-    echo "Performance mode enabled; disabled CPU idle states: $PERFORMANCE_IDLE_DISABLE_STATES."
+    echo "Latency-performance enabled; disabled CPU idle states: $PERFORMANCE_IDLE_DISABLE_STATES."
+    echo "Original settings saved in $STATE_FILE. Run this script with off after experiments."
 }
 
 turn_off() {
     require_root
-
-    if systemctl list-unit-files "$SERVICE_NAME" >/dev/null 2>&1; then
-        systemctl disable --now "$SERVICE_NAME" >/dev/null 2>&1 || true
+    if [[ ! -f "$STATE_FILE" ]]; then
+        echo "No saved settings found at $STATE_FILE; nothing changed, no fallback applied." >&2
+        return 1
     fi
-
-    if [[ -f "$STATE_FILE" ]]; then
-        restore_saved_settings
-        enable_all_idle_states
-        echo "Performance mode disabled; restored saved CPU scaling settings and re-enabled CPU idle states."
+    local original_profile original_mode
+    original_profile="$(sed -n 's/^tuned profile //p' "$STATE_FILE")"
+    original_mode="$(sed -n 's/^tuned mode //p' "$STATE_FILE")"
+    [[ -n "$original_profile" && "$original_mode" =~ ^(auto|manual)$ ]] || return 1
+    if [[ "$original_mode" == auto ]]; then
+        if [[ "$(tuned-adm recommend)" != "$original_profile" ]]; then
+            echo "Automatic recommendation changed; cannot restore the original profile and auto mode. Keeping saved state." >&2
+            return 1
+        fi
+        tuned-adm auto_profile
     else
-        apply_fallback_off_settings
-        enable_all_idle_states
-        echo "Performance mode disabled; no saved settings found, applied fallback: governor=$OFF_GOVERNOR epp=$OFF_EPP, and re-enabled CPU idle states."
+        local profiles
+        read -r -a profiles <<<"$original_profile"
+        tuned-adm profile "${profiles[@]}"
     fi
+    [[ "$(cat "$TUNED_PROFILE_FILE")" == "$original_profile" && \
+       "$(cat "$TUNED_MODE_FILE")" == "$original_mode" ]]
+    tuned-adm verify
+    restore_saved_settings
+    rm -- "$STATE_FILE"
+    echo "Restored TuneD profile $original_profile ($original_mode) and saved CPU governor/EPP/idle settings."
 }
 
 status() {
-    local enabled active
-    enabled="$(systemctl is-enabled "$SERVICE_NAME" 2>/dev/null || true)"
-    active="$(systemctl is-active "$SERVICE_NAME" 2>/dev/null || true)"
-    [[ -n "$enabled" ]] || enabled="absent"
-    [[ -n "$active" ]] || active="inactive"
-
-    echo "Service:"
-    echo "  enabled: $enabled"
-    echo "  active:  $active"
+    echo "TuneD:"
+    echo "  profile: $(cat "$TUNED_PROFILE_FILE" 2>/dev/null || echo unavailable)"
+    echo "  mode:    $(cat "$TUNED_MODE_FILE" 2>/dev/null || echo unavailable)"
     echo
     echo "Saved settings:"
-    if [[ -f "$STATE_FILE" ]]; then
+    echo "  file: $STATE_FILE"
+    if [[ -r "$STATE_FILE" ]]; then
         sed 's/^/  /' "$STATE_FILE"
+    elif [[ -f "$STATE_FILE" ]]; then
+        echo "  saved state exists; use sudo to read it"
     else
         echo "  none"
     fi

@@ -12,6 +12,11 @@ are documented in the repository root and in
   orchestration flow.
 - `requests.json` contains the earlier multi-operation request workload.
 - `requestsNew.json` contains its minimal initialization-only variant.
+- [Experiment status and trace/buffer findings](experiment-status-2026-10-05.md)
+  records the October 2026 campaign dispositions and diagnostic findings.
+- [Native experiment migration handover](native-experiment-handover.md) covers
+  GitHub cloning, rebuilding with Docker, and native Shared/Container-only reproduction,
+  with separate single-client and scalability YAML templates.
 
 The sequence diagrams use the timestamp labels from the earlier text-log
 instrumentation. The current implementation records structured binary trace

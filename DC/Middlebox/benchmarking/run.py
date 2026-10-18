@@ -404,8 +404,9 @@ kretprobe:__sgx_encl_ewb
     @ewb_success++;
 }}
 
-kretprobe:__sgx_encl_eldu
-/retval == 0/
+// The wrapper returns a page pointer; exclude NULL and ERR_PTR(-1..-4095).
+kretprobe:sgx_encl_eldu
+/(uint64)retval != 0 && (uint64)retval < (uint64)(-4095)/
 {{
     @eldu_success++;
 }}
@@ -988,7 +989,7 @@ class DockerGatewayDeployment(Deployment):
         certs_container = str(self.cfg.get("worker_certs_container_path", certs_host))
         min_ready = str(self.cfg.get("min_ready", 1))
         scale_up_by = str(self.cfg.get("scale_up_by", min_ready))
-        worker_trace_enabled = str(bool(self.cfg.get("worker_trace_enabled", False))).lower()
+        worker_trace_enabled = str(self.cfg.get("worker_trace_enabled", False)).strip().lower()
         worker_reuse_dc = str(bool(self.cfg.get("worker_reuse_dc", True))).lower()
         worker_sgx_enabled = bool(self.cfg.get("worker_sgx_enabled", False))
         traces_host = str(self.run.traces_dir.resolve())

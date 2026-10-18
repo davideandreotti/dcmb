@@ -50,7 +50,7 @@ type gramineMemorySampler struct {
 }
 
 func startGramineMemorySampler(tracePath string) (*gramineMemorySampler, error) {
-	if os.Getenv(sharedGramineEnv) != "1" {
+	if os.Getenv(sharedGramineEnv) != "1" || tracePath == "buffers" {
 		return nil, nil
 	}
 

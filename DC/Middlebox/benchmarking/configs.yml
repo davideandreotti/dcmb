@@ -1,3 +1,5 @@
+# Canonical methodology; adapt /path/to/dcmb and SERVER_IP in an ignored local copy.
+# Docker is the reference runtime; see docs/native-experiment-handover.md for host setup.
 campaign:
   name: paper_single_client
   output_root: experiments
@@ -8,6 +10,10 @@ campaign:
   cooldown_s: 10
   readiness_timeout_s: 30
   cpu_interval_s: 0.2
+  # Keep middlebox logger buffers without recording; retain other trace roles.
+  # Shared commands and container worker_trace_enabled below select buffers.
+  # Shared-SGX memory sampling is disabled in buffer-only mode.
+  trace_roles: [client, gateway, certserver, server]
   trace_buffer_events: 100000
   trace_drop_on_full: true
 
@@ -15,28 +21,29 @@ hosts:
   client:
     host: localhost
     ip: 127.0.0.1
-    work_dir: /home/bonsai/dcmb/DC/Middlebox
+    work_dir: /path/to/dcmb/DC/Middlebox
   middlebox:
     host: localhost
     ip: 127.0.0.1
-    work_dir: /home/bonsai/dcmb/DC/Middlebox
+    work_dir: /path/to/dcmb/DC/Middlebox
   server:
     host: localhost
-    ip: 10.79.1.175
-    work_dir: /home/bonsai/dcmb
+    ip: SERVER_IP
+    work_dir: /path/to/dcmb/DC/Middlebox
 
 paths:
-  middlebox_dir: /home/bonsai/dcmb/DC/Middlebox
+  middlebox_dir: /path/to/dcmb/DC/Middlebox
 
 server:
-  target_url: https://10.79.1.175:8000
-  cert_url: http://10.79.1.175:5000
+  target_url: https://SERVER_IP:8000
+  cert_url: http://SERVER_IP:5000
   request_path: /function/init
-  certserver_command: ["./certserver", "-log_level", "error"]
-  appserver_command: ["./appserver", "-log_level", "error"]
+  certserver_command: ["./certserver", "-log_level", "error", "-cert-path", "/path/to/dcmb/certs_external/server/cert.pem", "-key-path", "/path/to/dcmb/certs_external/server/key.pem"]
+  appserver_command: ["./appserver", "-log_level", "error", "-cert-path", "/path/to/dcmb/certs_external/server/cert.pem", "-key-path", "/path/to/dcmb/certs_external/server/key.pem"]
 
 client:
   binary: ./client
+  pacing: spin
   method: POST
   servername: server
   data:
@@ -66,23 +73,30 @@ deployments:
 
   - name: baremetal_full_reuse
     kind: baremetal
+    trace_enabled: false
     modes: [fresh, persistent]
-    command: ["./middlebox", "-log_level", "error", "-reuse_dc=true"]
+    command: ["./middlebox", "-log_level", "error", "-reuse_dc=true", "-ca", "/path/to/dcmb/certs_external/ca.crt", "-trace", "buffers"]
 
   - name: sgx_full_reuse
     kind: gramine_sgx
+    trace_enabled: false
     modes: [fresh, persistent]
-    # The 1250 and 1500 request/s points are the two established saturated
-    # points; higher rates add no capacity information.
     rates_by_mode:
       fresh: [1]
-      persistent: [1, 2, 5, 10, 25, 50, 100, 250, 500, 750, 1000, 1250, 1500]
-    command: ["gramine-sgx", "middlebox", "-log_level", "error", "-reuse_dc=true"]
+      persistent: [1, 2, 5, 10, 25, 50, 100, 250, 500, 750, 1000, 1250, 1500, 2000, 3000, 4000, 5000]
+    command: ["gramine-sgx", "middlebox", "-log_level", "error", "-reuse_dc=true", "-trace", "buffers"]
     env:
-      MBX_EMIT_QUOTE: "1"
+      MBX_EMIT_QUOTE: "0"
 
   - name: docker_full_noreuse
     kind: docker_gateway
+    runtime: docker
+    socket_host: /var/run/docker.sock
+    socket_container: /var/run/docker.sock
+    network: dcmb-middlebox-net
+    worker_certs_host_path: /path/to/dcmb/certs_external
+    worker_certs_container_path: /home/bonsai/dcmb/certs_external
+    worker_ca: /home/bonsai/dcmb/certs_external/ca.crt
     modes: [fresh]
     prewarm_for_clients: true
     pool_readiness_timeout_s: 120
@@ -92,11 +106,18 @@ deployments:
     scale_up_by: 10
     container_stats_scope: all
     container_stats_collector: auto
-    worker_trace_enabled: false
+    worker_trace_enabled: buffers
     docker_api_timeout_ms: 5000
 
   - name: docker_full_reuse
     kind: docker_gateway
+    runtime: docker
+    socket_host: /var/run/docker.sock
+    socket_container: /var/run/docker.sock
+    network: dcmb-middlebox-net
+    worker_certs_host_path: /path/to/dcmb/certs_external
+    worker_certs_container_path: /home/bonsai/dcmb/certs_external
+    worker_ca: /home/bonsai/dcmb/certs_external/ca.crt
     modes: [persistent]
     prewarm_for_clients: true
     pool_readiness_timeout_s: 120
@@ -106,45 +127,65 @@ deployments:
     scale_up_by: 10
     container_stats_scope: all
     container_stats_collector: auto
-    worker_trace_enabled: false
+    worker_trace_enabled: buffers
     docker_api_timeout_ms: 5000
 
   - name: docker_sgxgo_full_noreuse
     kind: docker_gateway
+    runtime: docker
+    socket_host: /var/run/docker.sock
+    socket_container: /var/run/docker.sock
+    network: dcmb-middlebox-net
+    worker_certs_host_path: /path/to/dcmb/certs_external
+    worker_certs_container_path: /home/bonsai/dcmb/certs_external
+    worker_ca: /home/bonsai/dcmb/certs_external/ca.crt
     modes: [fresh]
     prewarm_for_clients: true
     pool_readiness_timeout_s: 120
     worker_image: dcmiddlebox-worker:sgxgo
     worker_reuse_dc: false
     worker_sgx_enabled: true
-    worker_emit_quote: "1"
+    worker_emit_quote: "0"
     min_ready: 10
     scale_up_by: 10
     container_stats_scope: all
     container_stats_collector: auto
-    worker_trace_enabled: false
+    worker_trace_enabled: buffers
     docker_api_timeout_ms: 5000
 
   - name: docker_sgxgo_full_reuse
     kind: docker_gateway
+    runtime: docker
+    socket_host: /var/run/docker.sock
+    socket_container: /var/run/docker.sock
+    network: dcmb-middlebox-net
+    worker_certs_host_path: /path/to/dcmb/certs_external
+    worker_certs_container_path: /home/bonsai/dcmb/certs_external
+    worker_ca: /home/bonsai/dcmb/certs_external/ca.crt
     modes: [persistent]
-    # As above, stop after the second established saturated point.
-    rates: [1, 2, 5, 10, 25, 50, 100, 250, 500, 750, 1000, 1250, 1500]
+    rates: [1, 2, 5, 10, 25, 50, 100, 250, 500, 750, 1000, 1250, 1500, 2000, 3000, 4000, 5000]
     prewarm_for_clients: true
     pool_readiness_timeout_s: 180
     worker_image: dcmiddlebox-worker:sgxgo
     worker_reuse_dc: true
     worker_sgx_enabled: true
-    worker_emit_quote: "1"
+    worker_emit_quote: "0"
     min_ready: 10
     scale_up_by: 10
     container_stats_scope: all
     container_stats_collector: auto
-    worker_trace_enabled: false
+    worker_trace_enabled: buffers
     docker_api_timeout_ms: 5000
 
   - name: docker_full_resumption
     kind: docker_gateway
+    runtime: docker
+    socket_host: /var/run/docker.sock
+    socket_container: /var/run/docker.sock
+    network: dcmb-middlebox-net
+    worker_certs_host_path: /path/to/dcmb/certs_external
+    worker_certs_container_path: /home/bonsai/dcmb/certs_external
+    worker_ca: /home/bonsai/dcmb/certs_external/ca.crt
     prewarm_for_clients: true
     pool_readiness_timeout_s: 120
     modes: [resumption]
@@ -155,22 +196,29 @@ deployments:
     scale_up_by: 10
     container_stats_scope: all
     container_stats_collector: auto
-    worker_trace_enabled: false
+    worker_trace_enabled: buffers
     docker_api_timeout_ms: 5000
 
   - name: docker_sgxgo_full_resumption
     kind: docker_gateway
+    runtime: docker
+    socket_host: /var/run/docker.sock
+    socket_container: /var/run/docker.sock
+    network: dcmb-middlebox-net
+    worker_certs_host_path: /path/to/dcmb/certs_external
+    worker_certs_container_path: /home/bonsai/dcmb/certs_external
+    worker_ca: /home/bonsai/dcmb/certs_external/ca.crt
     prewarm_for_clients: true
     pool_readiness_timeout_s: 120
     modes: [resumption]
     worker_image: dcmiddlebox-worker:sgxgo
     worker_reuse_dc: false
     worker_sgx_enabled: true
-    worker_emit_quote: "1"
+    worker_emit_quote: "0"
     ticket_identity_key: dcmb-paper-resumption
     min_ready: 10
     scale_up_by: 10
     container_stats_scope: all
     container_stats_collector: auto
-    worker_trace_enabled: false
+    worker_trace_enabled: buffers
     docker_api_timeout_ms: 5000
